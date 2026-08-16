@@ -304,6 +304,9 @@ export type TestDb = Awaited<ReturnType<typeof makeTestDb>>["db"];
 
 ```ts
 import { defineConfig } from "drizzle-kit";
+import { config } from "dotenv";
+config({ path: ".env.local" }); // drizzle-kit runs outside Next.js — load the env file itself
+
 export default defineConfig({
   schema: "./src/db/schema.ts",
   out: "./drizzle",
@@ -549,7 +552,7 @@ describe("ebay client", () => {
     expect(url).toContain("item_summary/search");
     expect(url).toContain("sort=newlyListed");
     expect(url).toContain("category_ids=183454");
-    expect(url).toContain(encodeURIComponent("itemStartDate:[2026-08-15T00:00:00Z]"));
+    expect(url).toContain(encodeURIComponent("itemStartDate:[2026-08-15T00:00:00Z..]"));
   });
 
   it("retries once on 429 then succeeds", async () => {
@@ -653,7 +656,7 @@ export async function searchNewlyListed(
     sort: "newlyListed",
     limit: "200",
     offset: String(opts.offset),
-    filter: `itemStartDate:[${opts.sinceIso}]`,
+    filter: `itemStartDate:[${opts.sinceIso}..]`, // ".." = open-ended range; a bare [ts] is not eBay's documented filter form
   });
   const body = (await browseGet(db, "search", `${BROWSE}/item_summary/search?${params}`, fetchImpl)) as {
     total?: number; itemSummaries?: EbayItemSummary[];
@@ -1190,9 +1193,12 @@ export async function runScanTick(
 
           if (n.kind === "dropped") {
             stats.dropped++;
+            const rawCents = Number(item.price?.value);
             await db.insert(listings).values({
               ebayItemId: item.itemId, title: item.title, categoryId,
-              priceCents: Math.round(Number(item.price?.value ?? 0) * 100), listingType: item.buyingOptions.includes("AUCTION") ? "auction" : "bin",
+              // NaN guard: a malformed price string must not poison the insert and 500 the tick
+              priceCents: Number.isFinite(rawCents) ? Math.round(rawCents * 100) : 0,
+              listingType: item.buyingOptions.includes("AUCTION") ? "auction" : "bin",
               dropReason: n.reason, raw: item,
             }).onConflictDoNothing();
             continue;
@@ -1339,6 +1345,7 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch: {}
+permissions: {}
 jobs:
   tick:
     runs-on: ubuntu-latest
@@ -1346,7 +1353,7 @@ jobs:
     steps:
       - name: Call /api/scan
         run: |
-          code=$(curl -s -o /tmp/out -w "%{http_code}" -X POST \
+          code=$(curl -s --max-time 90 -o /tmp/out -w "%{http_code}" -X POST \
             -H "authorization: Bearer ${{ secrets.SCAN_SECRET }}" \
             "${{ secrets.SCAN_URL }}")
           cat /tmp/out
