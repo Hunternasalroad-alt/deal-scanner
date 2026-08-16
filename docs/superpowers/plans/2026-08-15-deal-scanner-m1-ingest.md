@@ -134,7 +134,16 @@ export function loadEnv(source: Record<string, string | undefined>): Env {
   return r.data;
 }
 
-export const env: Env = loadEnv(process.env);
+// Lazy: parsing happens on first property ACCESS, not at import time.
+// Importing this module must never throw (tests import it without real env vars);
+// `env.X` everywhere else keeps working unchanged.
+let cached: Env | null = null;
+export const env: Env = new Proxy({} as Env, {
+  get(_target, prop) {
+    cached ??= loadEnv(process.env);
+    return cached[prop as keyof Env];
+  },
+});
 ```
 
 - [ ] **Step 6: Run tests** — `pnpm test` → 3 PASS. Also `pnpm build` → compiles.
