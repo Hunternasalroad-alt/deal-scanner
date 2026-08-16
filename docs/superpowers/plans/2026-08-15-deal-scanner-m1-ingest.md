@@ -497,14 +497,15 @@ Add script `"sync:pokemon": "tsx --env-file=.env.local scripts/sync-pokemon.ts"`
 - [ ] **Step 1: Write the failing tests** — `tests/ebayClient.test.ts` (mock `fetch` with `vi.fn()`):
 
 ```ts
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { makeTestDb } from "./helpers/testDb";
-import { checkAndCount, getAppToken, searchNewlyListed, BudgetExceededError } from "@/lib/ebay/client";
+import { checkAndCount, getAppToken, resetEbayAuthCache, searchNewlyListed, BudgetExceededError } from "@/lib/ebay/client";
 import { apiBudget } from "@/db/schema";
 
 const tokenResponse = { ok: true, json: async () => ({ access_token: "tok", expires_in: 7200 }) };
 
 describe("ebay client", () => {
+  beforeEach(() => resetEbayAuthCache()); // module-level cache must not leak across tests
   it("fetches and caches the app token", async () => {
     const f = vi.fn().mockResolvedValue(tokenResponse as never);
     expect(await getAppToken(f as never)).toBe("tok");
@@ -592,6 +593,12 @@ export async function getAppToken(fetchImpl: typeof fetch = fetch): Promise<stri
   const body = (await res.json()) as { access_token: string; expires_in: number };
   cached = { token: body.access_token, expiresAt: Date.now() + body.expires_in * 1000 };
   return cached.token;
+}
+
+// The token cache is module-level state; tests reset it so each test's mock
+// sequence starts from a cold cache.
+export function resetEbayAuthCache(): void {
+  cached = null;
 }
 
 export async function checkAndCount(db: Db, kind: "search" | "detail"): Promise<void> {
