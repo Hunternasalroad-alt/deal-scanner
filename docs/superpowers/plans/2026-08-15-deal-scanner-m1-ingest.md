@@ -1108,12 +1108,17 @@ export type TickReport = {
   budgetStopped: boolean;
 };
 
-const GAMES: Record<string, Game> = {
-  [CATEGORY_IDS.pokemon]: "pokemon",
-  [CATEGORY_IDS.baseball]: "baseball",
-  [CATEGORY_IDS.basketball]: "basketball",
-  [CATEGORY_IDS.football]: "football",
-};
+// Entries list, not an object literal: unverified sports IDs are all the literal
+// "TBV" and would collapse into a single object key. Skipping them keeps ticks
+// working (Pokémon-only) until the taxonomy verification step fills in real IDs.
+const GAMES: [string, Game][] = (
+  [
+    [CATEGORY_IDS.pokemon, "pokemon"],
+    [CATEGORY_IDS.baseball, "baseball"],
+    [CATEGORY_IDS.basketball, "basketball"],
+    [CATEGORY_IDS.football, "football"],
+  ] as [string, Game][]
+).filter(([id]) => id !== "TBV");
 
 export async function runScanTick(
   db: Db,
@@ -1122,7 +1127,7 @@ export async function runScanTick(
   const now = deps.now?.() ?? new Date();
   const report: TickReport = { perCategory: {}, budgetStopped: false };
 
-  for (const [categoryId, game] of Object.entries(GAMES)) {
+  for (const [categoryId, game] of GAMES) {
     const stats = { fetched: 0, accepted: 0, dropped: 0, detailFetches: 0 };
     report.perCategory[categoryId] = stats;
     try {
