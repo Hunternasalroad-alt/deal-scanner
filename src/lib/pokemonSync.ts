@@ -60,12 +60,16 @@ export async function syncPokemonPage(db: Db, page: PokeApiCard[]) {
   return { upsertedCards, pricedCards };
 }
 
+// ~80 pages exist today; hard ceiling so an API paging bug can't spin the
+// unattended sync forever. Restart after a fix is safe — upserts are idempotent.
+const MAX_SYNC_PAGES = 300;
+
 export async function runPokemonSync(db: Db, fetchImpl: typeof fetch = fetch) {
   const { env } = await import("@/lib/config");
-  let pageNum = 1,
-    pages = 0,
-    upsertedCards = 0;
-  for (;;) {
+  let pages = 0, upsertedCards = 0;
+  for (let pageNum = 1; ; pageNum++) {
+    if (pageNum > MAX_SYNC_PAGES)
+      throw new Error(`pokemontcg.io sync exceeded ${MAX_SYNC_PAGES} pages — aborting (possible API paging bug)`);
     const res = await fetchImpl(
       `https://api.pokemontcg.io/v2/cards?page=${pageNum}&pageSize=250&select=id,name,number,set,tcgplayer`,
       { headers: { "X-Api-Key": env.POKEMONTCG_API_KEY } }
@@ -74,9 +78,7 @@ export async function runPokemonSync(db: Db, fetchImpl: typeof fetch = fetch) {
     const body = (await res.json()) as { data: PokeApiCard[] };
     if (body.data.length === 0) break;
     const r = await syncPokemonPage(db, body.data);
-    upsertedCards += r.upsertedCards;
-    pages++;
-    pageNum++;
+    upsertedCards += r.upsertedCards; pages++;
   }
   return { pages, upsertedCards };
 }

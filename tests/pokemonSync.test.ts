@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { makeTestDb } from "./helpers/testDb";
-import { syncPokemonPage } from "@/lib/pokemonSync";
+import { syncPokemonPage, runPokemonSync } from "@/lib/pokemonSync";
 import { cards, rawPrices } from "@/db/schema";
 import page from "./fixtures/pokemontcgio-page.json";
 
@@ -15,5 +15,17 @@ describe("syncPokemonPage", () => {
     expect(await db.select().from(cards)).toHaveLength(3);
     const prices = await db.select().from(rawPrices);
     expect(prices.find((p) => p.marketCents === 149924)).toBeTruthy();
+  });
+
+  it("aborts if the API pages forever", async () => {
+    vi.stubEnv("DATABASE_URL", "postgres://localhost/test");
+    vi.stubEnv("EBAY_CLIENT_ID", "test-id");
+    vi.stubEnv("EBAY_CLIENT_SECRET", "test-secret");
+    vi.stubEnv("POKEMONTCG_API_KEY", "test-key");
+    vi.stubEnv("SCAN_SECRET", "a".repeat(32));
+
+    const { db } = await makeTestDb();
+    const f = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [page[0]] }) } as never);
+    await expect(runPokemonSync(db, f as never)).rejects.toThrow(/exceeded 300 pages/);
   });
 });
