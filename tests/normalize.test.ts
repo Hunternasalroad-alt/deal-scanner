@@ -35,6 +35,35 @@ describe("normalizeListing", () => {
       if (n.kind === "dropped") expect(n.reason).toBe(reason);
     });
 
+  it("aspect-named grader wins even when the title contains ACE SPEC", () => {
+    const n = normalizeListing(base("Computer Search ACE SPEC Ultra Rare slab"), {
+      ...base("Computer Search ACE SPEC Ultra Rare slab"),
+      localizedAspects: [
+        { name: "Graded", value: "Yes" },
+        { name: "Professional Grader", value: "Professional Sports Authenticator (PSA)" },
+        { name: "Grade", value: "10" },
+      ],
+    });
+    expect(n).toMatchObject({ kind: "accepted", grader: "PSA", grade: "10" });
+  });
+
+  it("ACE SPEC without any grader is not_graded, not unsupported_grader", () => {
+    const n = normalizeListing(base("Prime Catcher ACE SPEC raw NM"));
+    expect(n).toMatchObject({ kind: "dropped", reason: "not_graded" });
+  });
+
+  it("BVG aspect value maps to BGS", () => {
+    const n = normalizeListing(base("vintage slab"), {
+      ...base("vintage slab"),
+      localizedAspects: [
+        { name: "Graded", value: "Yes" },
+        { name: "Professional Grader", value: "BVG" },
+        { name: "Grade", value: "8" },
+      ],
+    });
+    expect(n).toMatchObject({ kind: "accepted", grader: "BGS", grade: "8" });
+  });
+
   it("prefers structured aspects over title text", () => {
     const n = normalizeListing(base("nice slab lot"), {
       ...base("nice slab lot"),
