@@ -177,7 +177,10 @@ export const cards = pgTable(
     id: serial("id").primaryKey(),
     game: text("game", { enum: ["pokemon", "baseball", "basketball", "football"] }).notNull(),
     name: text("name").notNull(),
-    setName: text("set_name"),
+    // Same NULLS-DISTINCT reasoning as `variant` below: this column sits in the
+    // identity unique index, and sports rows have no set name — a NULL here would
+    // make the index a no-op for them and let duplicate cards accumulate.
+    setName: text("set_name").notNull().default(""),
     year: integer("year"),
     cardNumber: text("card_number"),
     // NOT NULL with '' default: this column sits in the identity unique index, and
@@ -333,6 +336,16 @@ describe("schema", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].cardId).toBe(card.id);
     expect(rows[0].status).toBe("active");
+  });
+
+  it("identity index dedupes rows relying on the '' defaults for set/variant", async () => {
+    const { db } = await makeTestDb();
+    const values = { game: "football", name: "Justin Herbert", year: 2020, cardNumber: "325", createdFrom: "firehose" } as const;
+    const first = await db.insert(cards).values(values).onConflictDoNothing().returning();
+    const second = await db.insert(cards).values(values).onConflictDoNothing().returning();
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(0); // conflict fired — no NULLS-DISTINCT escape hatch
+    expect(await db.select().from(cards)).toHaveLength(1);
   });
 });
 ```
