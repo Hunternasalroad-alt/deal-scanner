@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { CATEGORY_IDS } from "@/lib/ebay/categories";
 import { BudgetExceededError, type getItemDetail, type searchNewlyListed } from "@/lib/ebay/client";
 import { normalizeListing } from "@/lib/normalize";
@@ -47,16 +47,24 @@ export async function runScanTick(
       for (let page = 0; page < MAX_PAGES; page++) {
         const { items } = await deps.search(db, { categoryId, sinceIso: since.toISOString(), offset: page * 200 });
         if (items.length === 0) break;
+
+        // Neon's http driver makes every DB call a full round trip — batch the
+        // page's existence check and lastSeen refresh (2 round trips per page)
+        // instead of paying 2 per item, or burst ticks blow the 60s function cap.
+        const pageIds = items.map((i) => i.itemId);
+        const existingRows = await db
+          .select({ id: listings.ebayItemId })
+          .from(listings)
+          .where(inArray(listings.ebayItemId, pageIds));
+        const existing = new Set(existingRows.map((r) => r.id));
+        if (existing.size > 0)
+          await db.update(listings).set({ lastSeen: sql`now()` }).where(inArray(listings.ebayItemId, [...existing]));
+
         for (const item of items) {
           stats.fetched++;
           const created = new Date(item.itemCreationDate);
           if (created > newestSeen) newestSeen = created;
-
-          const existing = await db.select({ id: listings.ebayItemId }).from(listings).where(eq(listings.ebayItemId, item.itemId));
-          if (existing.length > 0) {
-            await db.update(listings).set({ lastSeen: sql`now()` }).where(eq(listings.ebayItemId, item.itemId));
-            continue;
-          }
+          if (existing.has(item.itemId)) continue;
 
           let n = normalizeListing(item);
           let usedDetail = false;

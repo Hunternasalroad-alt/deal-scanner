@@ -2,11 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { makeTestDb } from "./helpers/testDb";
 import { runScanTick } from "@/lib/scan";
 import { cards, listings, cursorState } from "@/db/schema";
-import type { EbayItemSummary } from "@/lib/ebay/client";
+import { BudgetExceededError, type EbayItemSummary } from "@/lib/ebay/client";
 
-const mk = (id: string, title: string, minsAgo: number): EbayItemSummary => ({
+const mk = (id: string, title: string, minsAgo: number, price = "150.00"): EbayItemSummary => ({
   itemId: id, title, itemCreationDate: new Date(Date.now() - minsAgo * 60000).toISOString(),
-  price: { value: "150.00" }, buyingOptions: ["FIXED_PRICE"],
+  price: { value: price }, buyingOptions: ["FIXED_PRICE"],
 });
 
 describe("runScanTick", () => {
@@ -20,7 +20,7 @@ describe("runScanTick", () => {
     const detail = vi.fn(async () => { throw new Error("no detail needed in this fixture"); });
 
     const r1 = await runScanTick(db, { search: search as never, detail: detail as never });
-    expect(r1.perCategory["183454"]).toMatchObject({ fetched: 2, accepted: 1, dropped: 1 });
+    expect(r1.perCategory["183454"]).toMatchObject({ fetched: 2, accepted: 1, dropped: 1, detailFetches: 1 });
 
     const rows = await db.select().from(listings);
     expect(rows).toHaveLength(2);
@@ -30,5 +30,26 @@ describe("runScanTick", () => {
     const r2 = await runScanTick(db, { search: search as never, detail: detail as never });
     expect(await db.select().from(listings)).toHaveLength(2); // no dupes
     expect((await db.select().from(cursorState)).length).toBeGreaterThan(0);
+  });
+
+  it("stops cleanly when the budget is exhausted", async () => {
+    const { db } = await makeTestDb();
+    const search = vi.fn(async () => { throw new BudgetExceededError("cap"); });
+    const detail = vi.fn();
+    const r = await runScanTick(db, { search: search as never, detail: detail as never });
+    expect(r.budgetStopped).toBe(true);
+    expect(detail).not.toHaveBeenCalled();
+  });
+
+  it("never detail-fetches under the price floor", async () => {
+    const { db } = await makeTestDb();
+    const search = vi.fn(async (_db, opts) =>
+      opts.categoryId === "183454"
+        ? { total: 1, items: [mk("v1|cheap|0", "Squirtle PSA 10", 5, "40.00")] }
+        : { total: 0, items: [] });
+    const detail = vi.fn(async () => { throw new Error("must not be called"); });
+    const r = await runScanTick(db, { search: search as never, detail: detail as never });
+    expect(r.perCategory["183454"]).toMatchObject({ accepted: 1, detailFetches: 0 });
+    expect(detail).not.toHaveBeenCalled();
   });
 });
