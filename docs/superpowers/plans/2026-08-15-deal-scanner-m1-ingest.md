@@ -1055,9 +1055,9 @@ import { runScanTick } from "@/lib/scan";
 import { cards, listings, cursorState } from "@/db/schema";
 import type { EbayItemSummary } from "@/lib/ebay/client";
 
-const mk = (id: string, title: string, minsAgo: number): EbayItemSummary => ({
+const mk = (id: string, title: string, minsAgo: number, price = "150.00"): EbayItemSummary => ({
   itemId: id, title, itemCreationDate: new Date(Date.now() - minsAgo * 60000).toISOString(),
-  price: { value: "150.00" }, buyingOptions: ["FIXED_PRICE"],
+  price: { value: price }, buyingOptions: ["FIXED_PRICE"],
 });
 
 describe("runScanTick", () => {
@@ -1071,7 +1071,7 @@ describe("runScanTick", () => {
     const detail = vi.fn(async () => { throw new Error("no detail needed in this fixture"); });
 
     const r1 = await runScanTick(db, { search: search as never, detail: detail as never });
-    expect(r1.perCategory["183454"]).toMatchObject({ fetched: 2, accepted: 1, dropped: 1 });
+    expect(r1.perCategory["183454"]).toMatchObject({ fetched: 2, accepted: 1, dropped: 1, detailFetches: 1 });
 
     const rows = await db.select().from(listings);
     expect(rows).toHaveLength(2);
@@ -1082,14 +1082,37 @@ describe("runScanTick", () => {
     expect(await db.select().from(listings)).toHaveLength(2); // no dupes
     expect((await db.select().from(cursorState)).length).toBeGreaterThan(0);
   });
+
+  it("stops cleanly when the budget is exhausted", async () => {
+    const { db } = await makeTestDb();
+    const search = vi.fn(async () => { throw new BudgetExceededError("cap"); });
+    const detail = vi.fn();
+    const r = await runScanTick(db, { search: search as never, detail: detail as never });
+    expect(r.budgetStopped).toBe(true);
+    expect(detail).not.toHaveBeenCalled();
+  });
+
+  it("never detail-fetches under the price floor", async () => {
+    const { db } = await makeTestDb();
+    const search = vi.fn(async (_db, opts) =>
+      opts.categoryId === "183454"
+        ? { total: 1, items: [mk("v1|cheap|0", "Squirtle PSA 10", 5, "40.00")] }
+        : { total: 0, items: [] });
+    const detail = vi.fn(async () => { throw new Error("must not be called"); });
+    const r = await runScanTick(db, { search: search as never, detail: detail as never });
+    expect(r.perCategory["183454"]).toMatchObject({ accepted: 1, detailFetches: 0 });
+    expect(detail).not.toHaveBeenCalled();
+  });
 });
 ```
+
+(Add `BudgetExceededError` to the test's imports from `@/lib/ebay/client`.)
 
 - [ ] **Step 2: Run** — FAIL.
 - [ ] **Step 3: Implement `src/lib/scan.ts`** (complete):
 
 ```ts
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { CATEGORY_IDS } from "@/lib/ebay/categories";
 import { BudgetExceededError, type getItemDetail, type searchNewlyListed } from "@/lib/ebay/client";
 import { normalizeListing } from "@/lib/normalize";
@@ -1138,16 +1161,24 @@ export async function runScanTick(
       for (let page = 0; page < MAX_PAGES; page++) {
         const { items } = await deps.search(db, { categoryId, sinceIso: since.toISOString(), offset: page * 200 });
         if (items.length === 0) break;
+
+        // Neon's http driver makes every DB call a full round trip — batch the
+        // page's existence check and lastSeen refresh (2 round trips per page)
+        // instead of paying 2 per item, or burst ticks blow the 60s function cap.
+        const pageIds = items.map((i) => i.itemId);
+        const existingRows = await db
+          .select({ id: listings.ebayItemId })
+          .from(listings)
+          .where(inArray(listings.ebayItemId, pageIds));
+        const existing = new Set(existingRows.map((r) => r.id));
+        if (existing.size > 0)
+          await db.update(listings).set({ lastSeen: sql`now()` }).where(inArray(listings.ebayItemId, [...existing]));
+
         for (const item of items) {
           stats.fetched++;
           const created = new Date(item.itemCreationDate);
           if (created > newestSeen) newestSeen = created;
-
-          const existing = await db.select({ id: listings.ebayItemId }).from(listings).where(eq(listings.ebayItemId, item.itemId));
-          if (existing.length > 0) {
-            await db.update(listings).set({ lastSeen: sql`now()` }).where(eq(listings.ebayItemId, item.itemId));
-            continue;
-          }
+          if (existing.has(item.itemId)) continue;
 
           let n = normalizeListing(item);
           let usedDetail = false;
