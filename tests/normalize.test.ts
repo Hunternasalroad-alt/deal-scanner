@@ -64,6 +64,23 @@ describe("normalizeListing", () => {
     expect(n).toMatchObject({ kind: "accepted", grader: "BGS", grade: "8" });
   });
 
+  it("aspect-resolved grader beats a literal unsupported-grader token in the title", () => {
+    const n = normalizeListing(base("Pikachu ex CGC slab"), {
+      ...base("Pikachu ex CGC slab"),
+      localizedAspects: [
+        { name: "Graded", value: "Yes" },
+        { name: "Professional Grader", value: "Professional Sports Authenticator (PSA)" },
+        { name: "Grade", value: "10" },
+      ],
+    });
+    expect(n).toMatchObject({ kind: "accepted", grader: "PSA", grade: "10" });
+  });
+
+  it("bare ACE without SPEC still drops as unsupported grader", () => {
+    const n = normalizeListing(base("Charizard holo ACE 10 graded"));
+    expect(n).toMatchObject({ kind: "dropped", reason: "unsupported_grader" });
+  });
+
   it("prefers structured aspects over title text", () => {
     const n = normalizeListing(base("nice slab lot"), {
       ...base("nice slab lot"),
