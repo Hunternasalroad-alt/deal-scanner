@@ -8,7 +8,10 @@ export const cards = pgTable(
     id: serial("id").primaryKey(),
     game: text("game", { enum: ["pokemon", "baseball", "basketball", "football"] }).notNull(),
     name: text("name").notNull(),
-    setName: text("set_name"),
+    // Same NULLS-DISTINCT reasoning as `variant` below: this column sits in the
+    // identity unique index, and sports rows have no set name — a NULL here would
+    // make the index a no-op for them and let duplicate cards accumulate.
+    setName: text("set_name").notNull().default(""),
     year: integer("year"),
     cardNumber: text("card_number"),
     // NOT NULL with '' default: this column sits in the identity unique index, and

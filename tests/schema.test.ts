@@ -18,4 +18,14 @@ describe("schema", () => {
     expect(rows[0].cardId).toBe(card.id);
     expect(rows[0].status).toBe("active");
   });
+
+  it("identity index dedupes rows relying on the '' defaults for set/variant", async () => {
+    const { db } = await makeTestDb();
+    const values = { game: "football", name: "Justin Herbert", year: 2020, cardNumber: "325", createdFrom: "firehose" } as const;
+    const first = await db.insert(cards).values(values).onConflictDoNothing().returning();
+    const second = await db.insert(cards).values(values).onConflictDoNothing().returning();
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(0); // conflict fired — no NULLS-DISTINCT escape hatch
+    expect(await db.select().from(cards)).toHaveLength(1);
+  });
 });
