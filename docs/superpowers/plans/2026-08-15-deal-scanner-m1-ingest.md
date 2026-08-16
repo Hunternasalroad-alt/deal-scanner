@@ -557,7 +557,7 @@ describe("ebay client", () => {
 - [ ] **Step 3: Implement** — `src/lib/ebay/client.ts`:
 
 ```ts
-import { and, eq, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { apiBudget } from "@/db/schema";
 import type { Db } from "@/db/client";
 import { env } from "@/lib/config";
@@ -613,9 +613,11 @@ export async function checkAndCount(db: Db, kind: "search" | "detail"): Promise<
 }
 
 async function browseGet(db: Db, kind: "search" | "detail", url: string, fetchImpl: typeof fetch) {
-  await checkAndCount(db, kind);
   const token = await getAppToken(fetchImpl);
   for (let attempt = 0; ; attempt++) {
+    // Budget is charged per real HTTP attempt — retries included — because eBay
+    // meters 429/5xx responses against the free-tier quota too.
+    await checkAndCount(db, kind);
     const res = await fetchImpl(url, {
       headers: { authorization: `Bearer ${token}`, "X-EBAY-C-MARKETPLACE-ID": "EBAY_US" },
     });
