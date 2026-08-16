@@ -76,9 +76,12 @@ export async function runScanTick(
 
           if (n.kind === "dropped") {
             stats.dropped++;
+            const rawCents = Number(item.price?.value);
             await db.insert(listings).values({
               ebayItemId: item.itemId, title: item.title, categoryId,
-              priceCents: Math.round(Number(item.price?.value ?? 0) * 100), listingType: item.buyingOptions.includes("AUCTION") ? "auction" : "bin",
+              // NaN guard: a malformed price string must not poison the insert and 500 the tick
+              priceCents: Number.isFinite(rawCents) ? Math.round(rawCents * 100) : 0,
+              listingType: item.buyingOptions.includes("AUCTION") ? "auction" : "bin",
               dropReason: n.reason, raw: item,
             }).onConflictDoNothing();
             continue;

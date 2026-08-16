@@ -3,10 +3,10 @@
 A graded trading card eBay deal scanner that monitors eBay for newly-listed slabbed cards from Pokémon and sports categories, normalizes listings, and matches them to a reference database.
 
 **Status: M1 (Dry-run ingest only)**
-- Actively ingrests, normalizes, and matches listings
+- Actively ingests, normalizes, and matches listings
 - Feed page accumulates results at `/feed`
 - Alerts and scoring arrive in M3 (post-M2 comp engine)
-- Dry-run mode (`DRY_RUN=1`) prevents live data mutation and alerts
+- `DRY_RUN` is reserved to gate alert sending in M3; it has no effect in M1, and M1 ingest always writes listings — the whole point of the dry-run soak is a feed accumulating rows
 
 ## Environment Variables
 
@@ -19,7 +19,7 @@ Set these in `vercel → Settings → Environment Variables` (production) and `.
 | `EBAY_CLIENT_SECRET` | eBay REST API client secret | Same eBay app, copy Secret from Keyset |
 | `POKEMONTCG_API_KEY` | PokemonTCG.io free API key | Register at [pokemontcg.io](https://pokemontcg.io/api-docs), copy API key from account settings |
 | `SCAN_SECRET` | Bearer token for `/api/scan` heartbeat | Generate a random 32+ character string (e.g., `openssl rand -hex 32`) |
-| `DRY_RUN` | Dry-run mode (1 = enabled, 0 = live) | Set to `1` for M1 (prevents data writes); set to `0` when ready for M2 live mode |
+| `DRY_RUN` | Reserved to gate alert sending in M3 | Defaults to `1`; has no effect in M1 — M1 ingest always writes listings regardless of this value |
 
 ## Running Tests
 
@@ -75,6 +75,7 @@ The workflow runs automatically every 5 minutes on a schedule; manual run overri
 ## Deploy Checklist
 
 1. **Push to GitHub:**
+   - Repo must be **public**. A private repo's 2,000 free GitHub Actions minutes/month cover only ~1 week of the 5-minute cron (288 runs/day); a public repo gets unlimited Actions minutes, which is what keeps this $0.
    ```bash
    git push origin m1-ingest
    ```
@@ -100,22 +101,25 @@ The workflow runs automatically every 5 minutes on a schedule; manual run overri
    - Wait for green check
    - Visit `/feed` and verify listings are accumulating
 
+6. **Know the cron's failure mode:**
+   - GitHub auto-disables scheduled workflows after ~60 days with no repository activity. If `/feed` stops growing, check Actions → scan-heartbeat for a "workflow disabled" banner and re-enable it (any commit/push resets the clock).
+
 ## Deferred Work (M1 → M2 → M3)
 
 ### M2 (Live mode + comp engine)
-- [ ] Run `pnpm db:push` to apply pending migrations (dry-run: noop in dev; live: creates tables in prod)
+- [ ] Run `pnpm db:push` to apply pending migrations
 - [ ] Run `pnpm sync:pokemon` to populate reference card database from PokemonTCG API
 - [ ] Verify eBay category IDs for baseball, basketball, and football (currently marked "TBV" in `src/lib/ebay/categories.ts`):
   - Use eBay Taxonomy API's `get_category_suggestions` endpoint with `EBAY_CLIENT_ID`/`SECRET`
   - Search for "trading cards" in each category
   - Replace string "TBV" with numeric category ID
-- [ ] Set `DRY_RUN=0` in Vercel environment (live ingest begins)
+- [ ] Set `DRY_RUN=0` in Vercel environment once M3 alert-sending exists (`DRY_RUN` has no effect before then — ingest is already live in M1)
 - [ ] First live scan tick (manual or scheduled) begins accumulating real listings
 
 ### M3 (Scoring + alerts)
 - AI classifier (reference prices → "price-interesting" signal)
 - Scoring engine (match confidence, graded rarity, price anomalies)
-- Alert generation (Slack, email, webhook)
+- Alert generation (Telegram instant alerts + daily email digest via Resend)
 - Dashboard (real-time monitoring)
 
 ## Architecture Notes
@@ -124,12 +128,12 @@ The workflow runs automatically every 5 minutes on a schedule; manual run overri
 - **Timeout:** Each tick is capped at 60 seconds (eBay search + detail fetches)
 - **Overlap:** 5-min schedule vs. 60-sec max runtime = no concurrent ticks (spec §8)
 - **Retry:** Single 1.5s retry on 429/5xx; unfinished work resumes next tick via cursors
-- **Budget:** eBay quota ~4,800 calls/day; current searches use ~200 calls/tick (well under limit)
+- **Budget:** eBay ingestion hard-stops at 4,800 calls/day; nominal ceiling is ≤11 calls per category per tick (3 search pages + 8 detail fetches) — ~3,200/day at the current Pokémon-only cadence (sports categories still "TBV")
 - **Idempotency:** All DB writes use upserts; cursor-based pagination ensures no duplicate ingests
 
 ## Spec References
 
-- Spec §7: Scanner heartbeat (5-min tick, bear-token auth)
+- Spec §3: Scanner heartbeat (5-min tick, Bearer token auth)
 - Spec §8: Dry-run ingest with overlap prevention and retry logic (M1 partial; full backoff in M2)
 
 ## Support

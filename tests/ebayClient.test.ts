@@ -46,7 +46,7 @@ describe("ebay client", () => {
     expect(url).toContain("item_summary/search");
     expect(url).toContain("sort=newlyListed");
     expect(url).toContain("category_ids=183454");
-    expect(url).toContain(encodeURIComponent("itemStartDate:[2026-08-15T00:00:00Z]"));
+    expect(url).toContain(encodeURIComponent("itemStartDate:[2026-08-15T00:00:00Z..]"));
   });
 
   it("retries once on 429 then succeeds", async () => {

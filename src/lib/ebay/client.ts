@@ -81,7 +81,7 @@ export async function searchNewlyListed(
     sort: "newlyListed",
     limit: "200",
     offset: String(opts.offset),
-    filter: `itemStartDate:[${opts.sinceIso}]`,
+    filter: `itemStartDate:[${opts.sinceIso}..]`, // ".." = open-ended range; a bare [ts] is not eBay's documented filter form
   });
   const body = (await browseGet(db, "search", `${BROWSE}/item_summary/search?${params}`, fetchImpl)) as {
     total?: number; itemSummaries?: EbayItemSummary[];
