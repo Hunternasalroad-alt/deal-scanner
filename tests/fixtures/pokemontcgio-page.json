@@ -1,0 +1,45 @@
+[
+  {
+    "id": "sv04pt-1",
+    "name": "Pikachu ex",
+    "number": "1",
+    "set": {
+      "name": "Scarlet & Violet: Shining Treasure",
+      "releaseDate": "2024-08-15"
+    },
+    "tcgplayer": {
+      "prices": {
+        "holofoil": {
+          "market": 1499.24
+        },
+        "reverseHolofoil": {
+          "market": 299.50
+        }
+      }
+    }
+  },
+  {
+    "id": "sv04pt-25",
+    "name": "Mew",
+    "number": "25",
+    "set": {
+      "name": "Scarlet & Violet: Shining Treasure",
+      "releaseDate": "2024-08-15"
+    },
+    "tcgplayer": {
+      "prices": {
+        "normal": {
+          "market": 2.5
+        }
+      }
+    }
+  },
+  {
+    "id": "sv04pt-130",
+    "name": "Gyarados",
+    "number": "130",
+    "set": {
+      "name": "Scarlet & Violet: Shining Treasure"
+    }
+  }
+]

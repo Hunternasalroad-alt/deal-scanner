@@ -8,7 +8,8 @@
     "start": "next start",
     "test": "vitest run",
     "lint": "eslint .",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push",
+    "sync:pokemon": "tsx --env-file=.env.local scripts/sync-pokemon.ts"
   },
   "keywords": [],
   "author": "",
@@ -37,6 +38,7 @@
     "drizzle-kit": "^0.31.10",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.3.1",
+    "tsx": "^4.23.12",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
   }
