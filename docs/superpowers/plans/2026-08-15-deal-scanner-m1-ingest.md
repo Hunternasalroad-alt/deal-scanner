@@ -429,10 +429,16 @@ export async function syncPokemonPage(db: Db, page: PokeApiCard[]) {
   return { upsertedCards, pricedCards };
 }
 
+// ~80 pages exist today; hard ceiling so an API paging bug can't spin the
+// unattended sync forever. Restart after a fix is safe — upserts are idempotent.
+const MAX_SYNC_PAGES = 300;
+
 export async function runPokemonSync(db: Db, fetchImpl: typeof fetch = fetch) {
   const { env } = await import("@/lib/config");
-  let pageNum = 1, pages = 0, upsertedCards = 0;
-  for (;;) {
+  let pages = 0, upsertedCards = 0;
+  for (let pageNum = 1; ; pageNum++) {
+    if (pageNum > MAX_SYNC_PAGES)
+      throw new Error(`pokemontcg.io sync exceeded ${MAX_SYNC_PAGES} pages — aborting (possible API paging bug)`);
     const res = await fetchImpl(
       `https://api.pokemontcg.io/v2/cards?page=${pageNum}&pageSize=250&select=id,name,number,set,tcgplayer`,
       { headers: { "X-Api-Key": env.POKEMONTCG_API_KEY } },
@@ -441,11 +447,23 @@ export async function runPokemonSync(db: Db, fetchImpl: typeof fetch = fetch) {
     const body = (await res.json()) as { data: PokeApiCard[] };
     if (body.data.length === 0) break;
     const r = await syncPokemonPage(db, body.data);
-    upsertedCards += r.upsertedCards; pages++; pageNum++;
+    upsertedCards += r.upsertedCards; pages++;
   }
   return { pages, upsertedCards };
 }
 ```
+
+- [ ] **Step 4b: Loop-bound test** — add to `tests/pokemonSync.test.ts` (uses the first fixture card only, so the 300 bounded iterations stay fast):
+
+```ts
+it("aborts if the API pages forever", async () => {
+  const { db } = await makeTestDb();
+  const f = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [page[0]] }) } as never);
+  await expect(runPokemonSync(db, f as never)).rejects.toThrow(/exceeded 300 pages/);
+});
+```
+
+(Add `vi` to the vitest import and `runPokemonSync` to the module import; `POKEMONTCG_API_KEY` must come from a stubbed env — set `process.env` keys for the five required vars at the top of this test via `vi.stubEnv`, or the lazy config proxy will throw on first access.)
 
 - [ ] **Step 5: Run tests** — PASS.
 - [ ] **Step 6: CLI script** — `scripts/sync-pokemon.ts`:
