@@ -723,6 +723,35 @@ describe("normalizeListing", () => {
       if (n.kind === "dropped") expect(n.reason).toBe(reason);
     });
 
+  it("aspect-named grader wins even when the title contains ACE SPEC", () => {
+    const n = normalizeListing(base("Computer Search ACE SPEC Ultra Rare slab"), {
+      ...base("Computer Search ACE SPEC Ultra Rare slab"),
+      localizedAspects: [
+        { name: "Graded", value: "Yes" },
+        { name: "Professional Grader", value: "Professional Sports Authenticator (PSA)" },
+        { name: "Grade", value: "10" },
+      ],
+    });
+    expect(n).toMatchObject({ kind: "accepted", grader: "PSA", grade: "10" });
+  });
+
+  it("ACE SPEC without any grader is not_graded, not unsupported_grader", () => {
+    const n = normalizeListing(base("Prime Catcher ACE SPEC raw NM"));
+    expect(n).toMatchObject({ kind: "dropped", reason: "not_graded" });
+  });
+
+  it("BVG aspect value maps to BGS", () => {
+    const n = normalizeListing(base("vintage slab"), {
+      ...base("vintage slab"),
+      localizedAspects: [
+        { name: "Graded", value: "Yes" },
+        { name: "Professional Grader", value: "BVG" },
+        { name: "Grade", value: "8" },
+      ],
+    });
+    expect(n).toMatchObject({ kind: "accepted", grader: "BGS", grade: "8" });
+  });
+
   it("prefers structured aspects over title text", () => {
     const n = normalizeListing(base("nice slab lot"), {
       ...base("nice slab lot"),
@@ -767,7 +796,9 @@ export type Normalized = Accepted | Dropped;
 
 const CANDIDATE_RX = /\b(candidate|potential|worthy|pre[- ]?grade|regrade\??|psa\s*ready)\b/i;
 const GRADER_RX = /\b(PSA|BGS|SGC|Beckett|BVG)\s*[-:]?\s*(10|9\.5|9|8\.5|8|7\.5|7|6|5)?\b/i;
-const OTHER_GRADER_RX = /\b(CGC|ACE|TAG|HGA|GMA|MNT)\b/i;
+// "ACE" the grading company must not fire on "ACE SPEC", a printed Pokémon card
+// mechanic that appears constantly in legitimate titles in our main category.
+const OTHER_GRADER_RX = /\b(CGC|TAG|HGA|GMA|MNT)\b|\bACE\b(?![\s-]*SPEC)/i;
 
 function toCents(v?: string): number | null {
   if (!v) return null;
@@ -787,9 +818,12 @@ export function normalizeListing(item: EbayItemSummary, detail?: EbayItemDetail)
   let grade: string | null = null;
   const aspectGrader = aspects.get("professional grader") ?? "";
   if (/PSA/i.test(aspectGrader)) grader = "PSA";
-  else if (/(BGS|Beckett)/i.test(aspectGrader)) grader = "BGS";
+  else if (/(BGS|Beckett|BVG)/i.test(aspectGrader)) grader = "BGS";
   else if (/SGC/i.test(aspectGrader)) grader = "SGC";
   if (grader) grade = aspects.get("grade") ?? null;
+  // Structured aspects beat title text absolutely: once an aspect names a
+  // supported grader, no title token can override it. Title parsing is only a
+  // fallback for listings with no usable aspects.
   if (!grader) {
     const m = GRADER_RX.exec(title);
     if (m) {
@@ -801,7 +835,6 @@ export function normalizeListing(item: EbayItemSummary, detail?: EbayItemDetail)
     if (OTHER_GRADER_RX.test(title) || /grader/i.test(aspectGrader)) return { kind: "dropped", reason: "unsupported_grader" };
     return { kind: "dropped", reason: "not_graded" };
   }
-  if (OTHER_GRADER_RX.test(title) && !GRADER_RX.test(title)) return { kind: "dropped", reason: "unsupported_grader" };
 
   // 3. Money.
   const priceCents = toCents(item.price?.value);
