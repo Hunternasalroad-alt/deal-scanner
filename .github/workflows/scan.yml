@@ -1,0 +1,17 @@
+name: scan-heartbeat
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Call /api/scan
+        run: |
+          code=$(curl -s -o /tmp/out -w "%{http_code}" -X POST \
+            -H "authorization: Bearer ${{ secrets.SCAN_SECRET }}" \
+            "${{ secrets.SCAN_URL }}")
+          cat /tmp/out
+          test "$code" = "200"
