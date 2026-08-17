@@ -414,35 +414,55 @@ function bestMarketCents(c: PokeApiCard): number | null {
   return Math.round(Math.max(...markets) * 100);
 }
 
+// Batched: 2 DB round trips per 250-card page instead of 1-2 per card. Over the
+// Neon HTTP driver that is the difference between ~1 minute and ~1 hour for the
+// full ~20k-card catalog (final-review requirement before the first live run).
+const identityKey = (r: { setName: string | null; cardNumber: string | null; name: string }) =>
+  `${r.setName ?? ""}|${r.cardNumber ?? ""}|${r.name}`;
+
 export async function syncPokemonPage(db: Db, page: PokeApiCard[]) {
-  let upsertedCards = 0, pricedCards = 0;
-  for (const c of page) {
-    const [row] = await db
-      .insert(cards)
-      .values({
-        game: "pokemon", name: c.name, setName: c.set.name, cardNumber: c.number,
+  if (page.length === 0) return { upsertedCards: 0, pricedCards: 0 };
+
+  // Dedupe within the page by identity key: two rows hitting the same index key
+  // in one multi-row upsert make Postgres error ("cannot affect row a second time").
+  const byKey = new Map<string, PokeApiCard>();
+  for (const c of page) byKey.set(identityKey({ setName: c.set.name, cardNumber: c.number, name: c.name }), c);
+  const unique = [...byKey.values()];
+
+  const inserted = await db
+    .insert(cards)
+    .values(
+      unique.map((c) => ({
+        game: "pokemon" as const, name: c.name, setName: c.set.name, cardNumber: c.number,
         year: c.set.releaseDate ? Number(c.set.releaseDate.slice(0, 4)) : null,
-        externalIds: { pokemontcgio: c.id }, createdFrom: "catalog",
-      })
-      .onConflictDoUpdate({
-        target: [cards.game, cards.setName, cards.cardNumber, cards.name, cards.variant],
-        set: { externalIds: { pokemontcgio: c.id } },
-      })
-      .returning();
-    upsertedCards++;
+        externalIds: { pokemontcgio: c.id }, createdFrom: "catalog" as const,
+      })),
+    )
+    .onConflictDoUpdate({
+      target: [cards.game, cards.setName, cards.cardNumber, cards.name, cards.variant],
+      set: { externalIds: sql`excluded.external_ids` },
+    })
+    .returning({ id: cards.id, name: cards.name, setName: cards.setName, cardNumber: cards.cardNumber });
+
+  const idByKey = new Map(inserted.map((r) => [identityKey(r), r.id]));
+  const now = new Date();
+  const priceRows = unique.flatMap((c) => {
     const cents = bestMarketCents(c);
-    if (cents !== null) {
-      pricedCards++;
-      await db
-        .insert(rawPrices)
-        .values({ cardId: row.id, marketCents: cents, source: "pokemontcgio", asOf: new Date() })
-        .onConflictDoUpdate({
-          target: [rawPrices.cardId, rawPrices.source],
-          set: { marketCents: cents, asOf: sql`now()` },
-        });
-    }
-  }
-  return { upsertedCards, pricedCards };
+    const cardId = idByKey.get(identityKey({ setName: c.set.name, cardNumber: c.number, name: c.name }));
+    return cents !== null && cardId !== undefined
+      ? [{ cardId, marketCents: cents, source: "pokemontcgio", asOf: now }]
+      : [];
+  });
+  if (priceRows.length > 0)
+    await db
+      .insert(rawPrices)
+      .values(priceRows)
+      .onConflictDoUpdate({
+        target: [rawPrices.cardId, rawPrices.source],
+        set: { marketCents: sql`excluded.market_cents`, asOf: sql`excluded.as_of` },
+      });
+
+  return { upsertedCards: inserted.length, pricedCards: priceRows.length };
 }
 
 // ~80 pages exist today; hard ceiling so an API paging bug can't spin the
