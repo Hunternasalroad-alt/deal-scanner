@@ -78,21 +78,44 @@ export async function syncPokemonPage(db: Db, page: PokeApiCard[]) {
 // unattended sync forever. Restart after a fix is safe — upserts are idempotent.
 const MAX_SYNC_PAGES = 300;
 
-export async function runPokemonSync(db: Db, fetchImpl: typeof fetch = fetch) {
+// pokemontcg.io is a community API that intermittently 500/502s under load
+// (observed live: the same URL returned 200, then 500 twice, seconds apart).
+// A full sync must survive ~82 pages in one process, so each page fetch
+// retries with escalating backoff before giving up.
+const RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 20_000];
+
+async function fetchWithRetry(url: string, apiKey: string, fetchImpl: typeof fetch): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetchImpl(url, { headers: { "X-Api-Key": apiKey } });
+    if (res.ok) return res;
+    if (attempt >= RETRY_DELAYS_MS.length)
+      throw new Error(`pokemontcg.io ${res.status} after ${attempt + 1} attempts`);
+    await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+  }
+}
+
+export type SyncPageInfo = { page: number; upsertedCards: number; totalUpserted: number };
+
+export async function runPokemonSync(
+  db: Db,
+  fetchImpl: typeof fetch = fetch,
+  onPage?: (info: SyncPageInfo) => void,
+) {
   const { env } = await import("@/lib/config");
   let pages = 0, upsertedCards = 0;
   for (let pageNum = 1; ; pageNum++) {
     if (pageNum > MAX_SYNC_PAGES)
       throw new Error(`pokemontcg.io sync exceeded ${MAX_SYNC_PAGES} pages — aborting (possible API paging bug)`);
-    const res = await fetchImpl(
+    const res = await fetchWithRetry(
       `https://api.pokemontcg.io/v2/cards?page=${pageNum}&pageSize=250&select=id,name,number,set,tcgplayer`,
-      { headers: { "X-Api-Key": env.POKEMONTCG_API_KEY } }
+      env.POKEMONTCG_API_KEY,
+      fetchImpl,
     );
-    if (!res.ok) throw new Error(`pokemontcg.io ${res.status}`);
     const body = (await res.json()) as { data: PokeApiCard[] };
     if (body.data.length === 0) break;
     const r = await syncPokemonPage(db, body.data);
     upsertedCards += r.upsertedCards; pages++;
+    onPage?.({ page: pageNum, upsertedCards: r.upsertedCards, totalUpserted: upsertedCards });
   }
   return { pages, upsertedCards };
 }

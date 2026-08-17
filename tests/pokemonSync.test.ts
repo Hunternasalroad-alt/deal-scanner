@@ -28,4 +28,24 @@ describe("syncPokemonPage", () => {
     const f = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [page[0]] }) } as never);
     await expect(runPokemonSync(db, f as never)).rejects.toThrow(/exceeded 300 pages/);
   });
+
+  it("retries transient 5xx and then succeeds", async () => {
+    vi.stubEnv("POKEMONTCG_API_KEY", "k");
+    const { db } = await makeTestDb();
+    vi.useFakeTimers();
+    try {
+      const f = vi.fn()
+        .mockResolvedValueOnce({ ok: false, status: 500 } as never)
+        .mockResolvedValueOnce({ ok: false, status: 502 } as never)
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [page[0]] }) } as never)
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [] }) } as never);
+      const promise = runPokemonSync(db, f as never);
+      await vi.advanceTimersByTimeAsync(5_000); // covers the 1s + 3s backoffs
+      const r = await promise;
+      expect(r).toEqual({ pages: 1, upsertedCards: 1 });
+      expect(f).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
