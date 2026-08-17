@@ -28,4 +28,14 @@ describe("schema", () => {
     expect(second).toHaveLength(0); // conflict fired — no NULLS-DISTINCT escape hatch
     expect(await db.select().from(cards)).toHaveLength(1);
   });
+
+  it("identity index dedupes rows relying on the '' default for cardNumber", async () => {
+    const { db } = await makeTestDb();
+    const values = { game: "pokemon", name: "Pikachu", setName: "HGSS Black Star Promos", createdFrom: "catalog" } as const;
+    const first = await db.insert(cards).values(values).onConflictDoNothing().returning();
+    const second = await db.insert(cards).values(values).onConflictDoNothing().returning();
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(0); // conflict fired — no NULLS-DISTINCT escape hatch
+    expect(await db.select().from(cards)).toHaveLength(1);
+  });
 });

@@ -38,7 +38,10 @@ export async function syncPokemonPage(db: Db, page: PokeApiCard[]) {
     .insert(cards)
     .values(
       unique.map((c) => ({
-        game: "pokemon" as const, name: c.name, setName: c.set.name, cardNumber: c.number,
+        // c.number is typed string, but the API response is cast with zero runtime
+        // validation — a null/missing number must land as '' to hit the identity
+        // index's NOT NULL default, matching identityKey's `?? ""` semantics.
+        game: "pokemon" as const, name: c.name, setName: c.set.name, cardNumber: c.number ?? "",
         year: c.set.releaseDate ? Number(c.set.releaseDate.slice(0, 4)) : null,
         externalIds: { pokemontcgio: c.id }, createdFrom: "catalog" as const,
       })),

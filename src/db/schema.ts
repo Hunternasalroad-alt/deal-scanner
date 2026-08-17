@@ -13,7 +13,10 @@ export const cards = pgTable(
     // make the index a no-op for them and let duplicate cards accumulate.
     setName: text("set_name").notNull().default(""),
     year: integer("year"),
-    cardNumber: text("card_number"),
+    // Same NULLS-DISTINCT reasoning as `setName`/`variant`: this column sits in the
+    // identity unique index, and cards can lack a number (promos, malformed API
+    // rows) — a NULL here would exempt them from dedup and let duplicates accumulate.
+    cardNumber: text("card_number").notNull().default(""),
     // NOT NULL with '' default: this column sits in the identity unique index, and
     // Postgres treats NULLs as distinct — nullable here would break upsert idempotency.
     variant: text("variant").notNull().default(""),

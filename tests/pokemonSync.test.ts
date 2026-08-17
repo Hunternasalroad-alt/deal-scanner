@@ -17,6 +17,23 @@ describe("syncPokemonPage", () => {
     expect(prices.find((p) => p.marketCents === 149924)).toBeTruthy();
   });
 
+  it("normalizes a null cardNumber to '' so the identity index dedupes it", async () => {
+    const { db } = await makeTestDb();
+    const promo = {
+      id: "promo-1", name: "Pikachu", number: null, set: { name: "HGSS Black Star Promos" },
+      tcgplayer: { prices: { normal: { market: 12.34 } } },
+    };
+    await syncPokemonPage(db, [promo] as never);
+    const second = await syncPokemonPage(db, [promo] as never);
+    expect(second.upsertedCards).toBe(1);
+    const cardRows = await db.select().from(cards);
+    expect(cardRows).toHaveLength(1);
+    expect(cardRows[0].cardNumber).toBe("");
+    const priceRows = await db.select().from(rawPrices);
+    expect(priceRows).toHaveLength(1);
+    expect(priceRows[0].marketCents).toBe(1234);
+  });
+
   it("aborts if the API pages forever", async () => {
     vi.stubEnv("DATABASE_URL", "postgres://localhost/test");
     vi.stubEnv("EBAY_CLIENT_ID", "test-id");
