@@ -24,13 +24,27 @@ export function loadEnv(source: Record<string, string | undefined>): Env {
   return r.data;
 }
 
-// Lazy: parsing happens on first property ACCESS, not at import time.
-// Importing this module must never throw (tests import it without real env vars);
-// `env.X` everywhere else keeps working unchanged.
-let cached: Env | null = null;
+// Lazy AND per-field: each property validates on first ACCESS, independently.
+// Importing this module must never throw (tests import it without env vars), and
+// a consumer must only need the vars it actually touches — e.g. `sync:pokemon`
+// needs DATABASE_URL + POKEMONTCG_API_KEY and must not fail because the eBay
+// pair isn't filled in yet. Errors name the exact var. `loadEnv` (full parse)
+// remains for tests and any future whole-app boot check.
+const fieldCache = new Map<string, unknown>();
 export const env: Env = new Proxy({} as Env, {
   get(_target, prop) {
-    cached ??= loadEnv(process.env);
-    return cached[prop as keyof Env];
+    if (typeof prop !== "string") return undefined;
+    if (fieldCache.has(prop)) return fieldCache.get(prop);
+    const field = schema.shape[prop as keyof typeof schema.shape];
+    if (!field) return undefined;
+    const r = field.safeParse(process.env[prop]);
+    if (!r.success) throw new Error(`Invalid environment: ${prop}`);
+    fieldCache.set(prop, r.data);
+    return r.data;
   },
 });
+
+// Test seam: per-field cache must be resettable between tests that stub env vars.
+export function resetEnvCacheForTests(): void {
+  fieldCache.clear();
+}

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { loadEnv } from "@/lib/config";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { env, loadEnv, resetEnvCacheForTests } from "@/lib/config";
 
 const good = {
   DATABASE_URL: "postgres://u:p@h/db",
@@ -21,5 +21,24 @@ describe("loadEnv", () => {
   it("throws naming the missing var", () => {
     const { SCAN_SECRET: _omit, ...bad } = good;
     expect(() => loadEnv(bad)).toThrowError(/SCAN_SECRET/);
+  });
+});
+
+describe("env (per-field proxy)", () => {
+  afterEach(() => {
+    resetEnvCacheForTests();
+    vi.unstubAllEnvs();
+  });
+
+  it("per-field access works when unrelated vars are missing", () => {
+    vi.stubEnv("DATABASE_URL", "postgres://u:p@h/db");
+    expect(env.DATABASE_URL).toBe("postgres://u:p@h/db"); // eBay vars absent — must not throw
+  });
+  it("accessing a missing field names exactly that field", () => {
+    expect(() => env.EBAY_CLIENT_ID).toThrowError(/EBAY_CLIENT_ID/);
+  });
+  it("defaulted fields resolve without the var set", () => {
+    expect(env.DRY_RUN).toBe(true);
+    expect(env.EBAY_ENV).toBe("PRODUCTION");
   });
 });
