@@ -77,4 +77,61 @@ describe("syncPokemonPage", () => {
     expect(String(f.mock.calls[0][0])).toContain("page=41");
     expect(String(f.mock.calls[1][0])).toContain("page=42");
   });
+
+  it("rejects a card missing its set, naming the page and card id", async () => {
+    vi.stubEnv("POKEMONTCG_API_KEY", "k");
+    const { db } = await makeTestDb();
+    const f = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [
+          { id: "good-1", name: "Bulbasaur", number: "1", set: { name: "Base Set" } },
+          { id: "bad-1", name: "No Set" },
+        ],
+      }),
+    } as never);
+    const err = await runPokemonSync(db, f as never).then(
+      () => null,
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/pokemontcg\.io page 1 failed validation/);
+    expect((err as Error).message).toMatch(/card "bad-1"/);
+  });
+
+  it("fails loudly when the response body has no data array", async () => {
+    vi.stubEnv("POKEMONTCG_API_KEY", "k");
+    const { db } = await makeTestDb();
+    const f = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ error: "oops" }),
+    } as never);
+    await expect(runPokemonSync(db, f as never)).rejects.toThrow(
+      /pokemontcg\.io page 1 failed validation/,
+    );
+  });
+
+  it("null number passes validation and dedupes through the full sync path", async () => {
+    vi.stubEnv("POKEMONTCG_API_KEY", "k");
+    const { db } = await makeTestDb();
+    const f = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [
+            {
+              id: "promo-2", name: "Mewtwo", number: null,
+              set: { name: "HGSS Black Star Promos" },
+              tcgplayer: { prices: { normal: { market: 5 } } },
+            },
+          ],
+        }),
+      } as never)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [] }) } as never);
+    const r = await runPokemonSync(db, f as never);
+    expect(r).toEqual({ pages: 1, upsertedCards: 1 });
+    const cardRows = await db.select().from(cards);
+    expect(cardRows).toHaveLength(1);
+    expect(cardRows[0].cardNumber).toBe("");
+  });
 });

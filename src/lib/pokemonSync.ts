@@ -1,14 +1,46 @@
 import { sql } from "drizzle-orm";
+import { z } from "zod";
 import { cards, rawPrices } from "@/db/schema";
 import type { Db } from "@/db/client";
 
-export type PokeApiCard = {
-  id: string;
-  name: string;
-  number: string;
-  set: { name: string; releaseDate?: string };
-  tcgplayer?: { prices?: Record<string, { market?: number | null }> };
-};
+const pokeCardSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  // Deliberately tolerant: pokemontcg.io omits `number` for some promos — a
+  // null/missing number is valid input, normalized to '' at the insert site below.
+  number: z.string().nullish(),
+  set: z.object({ name: z.string(), releaseDate: z.string().optional() }),
+  tcgplayer: z
+    .object({ prices: z.record(z.string(), z.object({ market: z.number().nullish() })).optional() })
+    .optional(),
+});
+
+const pokePageSchema = z.object({ data: z.array(pokeCardSchema) });
+
+export type PokeApiCard = z.infer<typeof pokeCardSchema>;
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+
+// A card missing its `set` used to crash mid-sync with a bare TypeError deep in
+// identityKey; a shape-drifted response body used to crash on `.data.length`.
+// Both must fail loudly instead, naming the page and (when identifiable) card.
+function parsePokePage(raw: unknown, page: number): PokeApiCard[] {
+  const r = pokePageSchema.safeParse(raw);
+  if (r.success) return r.data.data;
+
+  const issue = r.error.issues[0];
+  const cardIndex = issue.path[0] === "data" && typeof issue.path[1] === "number" ? issue.path[1] : undefined;
+  const rawData = isRecord(raw) && Array.isArray(raw.data) ? raw.data : undefined;
+  const rawCard = cardIndex !== undefined ? rawData?.[cardIndex] : undefined;
+  const cardId = isRecord(rawCard) && typeof rawCard.id === "string" ? rawCard.id : undefined;
+  const cardPart = cardId ? ` (card "${cardId}")` : "";
+
+  throw new Error(
+    `pokemontcg.io page ${page} failed validation${cardPart}: ${issue.path.join(".")} — ${issue.message}`,
+  );
+}
 
 function bestMarketCents(c: PokeApiCard): number | null {
   const variants = Object.values(c.tcgplayer?.prices ?? {});
@@ -22,7 +54,7 @@ function bestMarketCents(c: PokeApiCard): number | null {
 // Batched: 2 DB round trips per 250-card page instead of 1-2 per card. Over the
 // Neon HTTP driver that is the difference between ~1 minute and ~1 hour for the
 // full ~20k-card catalog (final-review requirement before the first live run).
-const identityKey = (r: { setName: string | null; cardNumber: string | null; name: string }) =>
+const identityKey = (r: { setName: string | null; cardNumber: string | null | undefined; name: string }) =>
   `${r.setName ?? ""}|${r.cardNumber ?? ""}|${r.name}`;
 
 export async function syncPokemonPage(db: Db, page: PokeApiCard[]) {
@@ -38,9 +70,9 @@ export async function syncPokemonPage(db: Db, page: PokeApiCard[]) {
     .insert(cards)
     .values(
       unique.map((c) => ({
-        // c.number is typed string, but the API response is cast with zero runtime
-        // validation — a null/missing number must land as '' to hit the identity
-        // index's NOT NULL default, matching identityKey's `?? ""` semantics.
+        // The schema deliberately admits a null/missing number (promos) — it must
+        // land as '' to hit the identity index's NOT NULL default, matching
+        // identityKey's `?? ""` semantics.
         game: "pokemon" as const, name: c.name, setName: c.set.name, cardNumber: c.number ?? "",
         year: c.set.releaseDate ? Number(c.set.releaseDate.slice(0, 4)) : null,
         externalIds: { pokemontcgio: c.id }, createdFrom: "catalog" as const,
@@ -118,9 +150,9 @@ export async function runPokemonSync(
       env.POKEMONTCG_API_KEY,
       fetchImpl,
     );
-    const body = (await res.json()) as { data: PokeApiCard[] };
-    if (body.data.length === 0) break;
-    const r = await syncPokemonPage(db, body.data);
+    const data = parsePokePage(await res.json(), pageNum);
+    if (data.length === 0) break;
+    const r = await syncPokemonPage(db, data);
     upsertedCards += r.upsertedCards; pages++;
     onPage?.({ page: pageNum, upsertedCards: r.upsertedCards, totalUpserted: upsertedCards });
   }
