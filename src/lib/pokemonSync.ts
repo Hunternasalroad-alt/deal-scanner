@@ -100,10 +100,14 @@ export async function runPokemonSync(
   db: Db,
   fetchImpl: typeof fetch = fetch,
   onPage?: (info: SyncPageInfo) => void,
+  // Resume support: against a flaky API, sequential-from-1 restarts can never
+  // finish (observed: ~15 pages/attempt mean before failure vs 82 needed).
+  // Upserts are idempotent, so overlapping restarts are safe.
+  startPage = 1,
 ) {
   const { env } = await import("@/lib/config");
   let pages = 0, upsertedCards = 0;
-  for (let pageNum = 1; ; pageNum++) {
+  for (let pageNum = startPage; ; pageNum++) {
     if (pageNum > MAX_SYNC_PAGES)
       throw new Error(`pokemontcg.io sync exceeded ${MAX_SYNC_PAGES} pages — aborting (possible API paging bug)`);
     const res = await fetchWithRetry(

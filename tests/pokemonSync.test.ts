@@ -48,4 +48,16 @@ describe("syncPokemonPage", () => {
       vi.useRealTimers();
     }
   });
+
+  it("resumes from startPage", async () => {
+    vi.stubEnv("POKEMONTCG_API_KEY", "k");
+    const { db } = await makeTestDb();
+    const f = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [page[0]] }) } as never)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [] }) } as never);
+    const r = await runPokemonSync(db, f as never, undefined, 41);
+    expect(r).toEqual({ pages: 1, upsertedCards: 1 });
+    expect(String(f.mock.calls[0][0])).toContain("page=41");
+    expect(String(f.mock.calls[1][0])).toContain("page=42");
+  });
 });
