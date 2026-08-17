@@ -212,7 +212,10 @@ export const cards = pgTable(
     // make the index a no-op for them and let duplicate cards accumulate.
     setName: text("set_name").notNull().default(""),
     year: integer("year"),
-    cardNumber: text("card_number"),
+    // Same NULLS-DISTINCT reasoning as `setName`/`variant`: this column sits in the
+    // identity unique index, and cards can lack a number (promos, malformed API
+    // rows) — a NULL here would exempt them from dedup and let duplicates accumulate.
+    cardNumber: text("card_number").notNull().default(""),
     // NOT NULL with '' default: this column sits in the identity unique index, and
     // Postgres treats NULLs as distinct — nullable here would break upsert idempotency.
     variant: text("variant").notNull().default(""),
@@ -463,7 +466,10 @@ export async function syncPokemonPage(db: Db, page: PokeApiCard[]) {
     .insert(cards)
     .values(
       unique.map((c) => ({
-        game: "pokemon" as const, name: c.name, setName: c.set.name, cardNumber: c.number,
+        // c.number is typed string, but the API response is cast with zero runtime
+        // validation — a null/missing number must land as '' to hit the identity
+        // index's NOT NULL default, matching identityKey's `?? ""` semantics.
+        game: "pokemon" as const, name: c.name, setName: c.set.name, cardNumber: c.number ?? "",
         year: c.set.releaseDate ? Number(c.set.releaseDate.slice(0, 4)) : null,
         externalIds: { pokemontcgio: c.id }, createdFrom: "catalog" as const,
       })),
