@@ -521,10 +521,14 @@ export async function runPokemonSync(
   db: Db,
   fetchImpl: typeof fetch = fetch,
   onPage?: (info: SyncPageInfo) => void,
+  // Resume support: against a flaky API, sequential-from-1 restarts can never
+  // finish (observed: ~15 pages/attempt mean before failure vs 82 needed).
+  // Upserts are idempotent, so overlapping restarts are safe.
+  startPage = 1,
 ) {
   const { env } = await import("@/lib/config");
   let pages = 0, upsertedCards = 0;
-  for (let pageNum = 1; ; pageNum++) {
+  for (let pageNum = startPage; ; pageNum++) {
     if (pageNum > MAX_SYNC_PAGES)
       throw new Error(`pokemontcg.io sync exceeded ${MAX_SYNC_PAGES} pages — aborting (possible API paging bug)`);
     const res = await fetchWithRetry(
@@ -562,9 +566,14 @@ import { getDb } from "@/db/client";
 import { runPokemonSync } from "@/lib/pokemonSync";
 
 // Progress logging lives HERE (CLI), passed as a callback — the library stays
-// silent so test output stays pristine.
-runPokemonSync(getDb(), fetch, (p) =>
-  console.log(`page ${p.page}: +${p.upsertedCards} cards (${p.totalUpserted} total)`),
+// silent so test output stays pristine. SYNC_START_PAGE resumes a failed run.
+const startPage = Math.max(1, Number(process.env.SYNC_START_PAGE ?? "1") || 1);
+
+runPokemonSync(
+  getDb(),
+  fetch,
+  (p) => console.log(`page ${p.page}: +${p.upsertedCards} cards (${p.totalUpserted} total)`),
+  startPage,
 )
   .then((r) => console.log(`synced ${r.upsertedCards} cards over ${r.pages} pages`))
   .catch((e) => {
@@ -594,6 +603,18 @@ it("retries transient 5xx and then succeeds", async () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("resumes from startPage", async () => {
+  vi.stubEnv("POKEMONTCG_API_KEY", "k");
+  const { db } = await makeTestDb();
+  const f = vi.fn()
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [page[0]] }) } as never)
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [] }) } as never);
+  const r = await runPokemonSync(db, f as never, undefined, 41);
+  expect(r).toEqual({ pages: 1, upsertedCards: 1 });
+  expect(String(f.mock.calls[0][0])).toContain("page=41");
+  expect(String(f.mock.calls[1][0])).toContain("page=42");
 });
 ```
 
