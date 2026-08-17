@@ -15,9 +15,9 @@ Set these in `vercel → Settings → Environment Variables` (production) and `.
 | Variable | Purpose | How to Get It |
 |----------|---------|---------------|
 | `DATABASE_URL` | Neon PostgreSQL connection string | Create a [Neon project](https://console.neon.tech), copy connection string from Settings → Connection string (include password) |
-| `EBAY_CLIENT_ID` | eBay REST API client ID | Register app at [eBay Developer Portal](https://developer.ebay.com/my/applications), copy Client ID from Keyset |
-| `EBAY_CLIENT_SECRET` | eBay REST API client secret | Same eBay app, copy Secret from Keyset |
-| `POKEMONTCG_API_KEY` | PokemonTCG.io free API key | Register at [pokemontcg.io](https://pokemontcg.io/api-docs), copy API key from account settings |
+| `EBAY_CLIENT_ID` | eBay REST API client ID | Sign in at [eBay Developer Portal](https://developer.ebay.com), Your Account → Application Keys, create/copy Production keyset. App ID (Client ID) → `EBAY_CLIENT_ID` |
+| `EBAY_CLIENT_SECRET` | eBay REST API client secret | Cert ID from same Production keyset → `EBAY_CLIENT_SECRET` (see [eBay keyset guide](https://developer.ebay.com/api-docs/static/gs_create-the-ebay-api-keysets.html)) |
+| `POKEMONTCG_API_KEY` | PokemonTCG.io free API key | Sign up at [dev.pokemontcg.io](https://dev.pokemontcg.io/) with Auth0, generate and copy API key from dashboard. (See also [API docs](https://docs.pokemontcg.io/)) |
 | `SCAN_SECRET` | Bearer token for `/api/scan` heartbeat | Generate a random 32+ character string (e.g., `openssl rand -hex 32`) |
 | `DRY_RUN` | Reserved to gate alert sending in M3 | Defaults to `1`; has no effect in M1 — M1 ingest always writes listings regardless of this value |
 
