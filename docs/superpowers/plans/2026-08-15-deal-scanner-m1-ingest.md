@@ -1351,6 +1351,12 @@ export async function runScanTick(
           if (created > newestSeen) newestSeen = created;
           if (existing.has(item.itemId)) continue;
 
+          // Compliance-by-construction: we claim eBay's marketplace-account-deletion
+          // exemption on the basis that we store NO eBay user data. The Browse payload
+          // includes the seller's username — strip the seller object before persisting.
+          // The anonymous numeric feedback stats live in their own columns.
+          const { seller: _stripSeller, ...rawForStorage } = item;
+
           let n = normalizeListing(item);
           let usedDetail = false;
           if (n.kind === "accepted" && (!n.grade || !n.certNumber) && n.priceCents >= DETAIL_MIN_PRICE_CENTS && stats.detailFetches < DETAIL_CAP_PER_CATEGORY) {
@@ -1367,7 +1373,7 @@ export async function runScanTick(
               // NaN guard: a malformed price string must not poison the insert and 500 the tick
               priceCents: Number.isFinite(rawCents) ? Math.round(rawCents * 100) : 0,
               listingType: item.buyingOptions.includes("AUCTION") ? "auction" : "bin",
-              dropReason: n.reason, raw: item,
+              dropReason: n.reason, raw: rawForStorage,
             }).onConflictDoNothing();
             continue;
           }
@@ -1383,7 +1389,7 @@ export async function runScanTick(
             endTime: item.itemEndDate ? new Date(item.itemEndDate) : null,
             sellerFeedbackPct: item.seller?.feedbackPercentage ? Math.round(Number(item.seller.feedbackPercentage)) : null,
             sellerFeedbackCount: item.seller?.feedbackScore ?? null,
-            raw: item,
+            raw: rawForStorage,
           }).onConflictDoNothing();
         }
         if (items.length < 200) break;
