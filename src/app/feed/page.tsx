@@ -5,6 +5,7 @@ import { cards, listings } from "@/db/schema";
 export const dynamic = "force-dynamic";
 
 export default async function FeedPage() {
+  const itemUrl = (id: string) => `https://www.ebay.com/itm/${id.split("|")[1] ?? id}`;
   const rows = await getDb()
     .select({ id: listings.ebayItemId, title: listings.title, grader: listings.grader, grade: listings.grade, price: listings.priceCents, conf: listings.matchConfidence, card: cards.name, scoreBps: listings.scoreBps, scoreBasis: listings.scoreBasis })
     .from(listings).leftJoin(cards, eq(listings.cardId, cards.id))
@@ -17,7 +18,7 @@ export default async function FeedPage() {
         <tbody>
           {rows.map((r) => (
             <tr key={r.id}>
-              <td>{r.card ?? "—"}</td><td>{r.title}</td><td>{r.grader} {r.grade}</td>
+              <td>{r.card ?? "—"}</td><td><a href={itemUrl(r.id)} target="_blank" rel="noopener noreferrer">{r.title}</a></td><td>{r.grader} {r.grade}</td>
               <td align="right">${(r.price / 100).toFixed(2)}</td><td>{r.conf}</td>
               <td align="right">
                 {r.scoreBps != null
