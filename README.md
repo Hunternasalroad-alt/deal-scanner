@@ -71,6 +71,15 @@ pnpm sync:pokemon
 
 Run this manually once per week (M3 will automate it). It populates the reference database so new cards can be scored as soon as they appear in listings.
 
+## Manual comps (Fanatics Collect etc.)
+
+Some graded-card sales never show up in eBay's Browse API — a public sold-price page like fanaticscollect.com's sales history is a good example. When you personally observe a sale there, record it in a CSV (start from the template at `docs/comps-template.csv`) and import it as a `comps` row with `source: "manual"`. Only PSA/BGS/SGC grades are tracked, same as the rest of the scanner; Pokémon rows must match a card already in the synced catalog (`pnpm sync:pokemon`) by set/number/name/variant — the importer never creates new Pokémon cards, only sports cards, to avoid forking the catalog on a typo. Imported comps feed the same reference-median and feed sale-metric columns as eBay-sourced comps automatically, with no extra step needed.
+
+```bash
+pnpm comps:import docs/comps-template.csv --dry-run   # preview matches, writes nothing
+pnpm comps:import path/to/your-comps.csv              # actually import
+```
+
 ## Manual Scan Tick
 
 ### Local

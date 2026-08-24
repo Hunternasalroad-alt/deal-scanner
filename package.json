@@ -10,7 +10,8 @@
     "test": "vitest run",
     "lint": "eslint .",
     "db:push": "drizzle-kit push",
-    "sync:pokemon": "tsx --env-file=.env.local scripts/sync-pokemon.ts"
+    "sync:pokemon": "tsx --env-file=.env.local scripts/sync-pokemon.ts",
+    "comps:import": "tsx --env-file=.env.local scripts/import-comps.ts"
   },
   "keywords": [],
   "author": "",
