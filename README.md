@@ -46,6 +46,31 @@ https://<prod-domain>/feed
 
 Shows last 100 matched listings with card name, title, slab details, price, and match confidence. Order: newest first. Only listings with no `dropReason` are shown (i.e., successfully matched).
 
+## M2: comps & scoring
+
+**What the two sweeps record:** The comp engine ingests two types of real sales for building reference prices:
+- `auction_close`: listings that ended in an actual sale (finalized transaction on eBay)
+- `bin_disappeared`: listings that sold out within 48 hours of listing (a reliable proxy for a sale at the BIN price on fast-moving inventory)
+
+**What a score means:** Each matched listing is scored against a reference price for its (card, grader, grade) combination. The score is a percentage difference from the reference:
+- Negative score = the listing is *overpriced* (above the reference)
+- Positive score = the listing is *underpriced* (below the reference; desirable)
+- Score formula: `(price - reference) / reference × 100%`
+
+**Reference eligibility:** A reference price appears once any (card, grader, grade) accumulates:
+- **3+ comps in the last 30 days**, *or*
+- **A raw-price floor** (the lowest recorded BIN from `bin_disappeared` sweeps) on grades 9, 9.5, or 10 only
+
+**No alerts exist yet — M3 adds Telegram/email; this milestone only measures.** M2 records comps and scores; M3 will add alert rules and delivery channels (instant Telegram alerts + daily email digests).
+
+**Weekly sync:** The reference card database (grades and images from PokemonTCG.io) must be kept current:
+
+```bash
+pnpm sync:pokemon
+```
+
+Run this manually once per week (M3 will automate it). It populates the reference database so new cards can be scored as soon as they appear in listings.
+
 ## Manual Scan Tick
 
 ### Local
