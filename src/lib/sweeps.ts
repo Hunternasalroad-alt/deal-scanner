@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { comps, deadLetters, listings } from "@/db/schema";
 import type { Db } from "@/db/client";
 import { BudgetExceededError, EbayHttpError, type getItemDetail } from "@/lib/ebay/client";
@@ -94,6 +94,13 @@ export async function sweepAgedBins(
         eq(listings.listingType, "bin"),
         eq(listings.status, "active"),
         lt(listings.firstSeen, sql`now() - interval '6 hours'`),
+        // Only listings still inside the 48h comp-eligible window are worth
+        // probing — a vanish observed past that window can no longer be
+        // recorded as a comp (see recordVanished's withinSaleWindow below), so
+        // probing it would just burn an eBay call for nothing. Status hygiene
+        // for stale BINs (marking them "ended") is deferred to M3's bulk-expiry
+        // sweep rather than done here.
+        gt(listings.firstSeen, sql`now() - interval '48 hours'`),
         // Unlike sweepEndedAuctions' endTime filter, firstSeen is set on every
         // listing — including scan.ts's dropped/unmatched rows, which never get
         // a grader. Without this, an aged dropped BIN would become a candidate
@@ -104,8 +111,11 @@ export async function sweepAgedBins(
     )
     // Ordering trap: plain asc() is NULLS LAST in Postgres, which would starve
     // never-probed listings behind already-probed ones forever. The explicit
-    // fragment below puts them first.
-    .orderBy(sql`${listings.lastProbedAt} asc nulls first`, asc(listings.firstSeen))
+    // fragment below puts them first; within each tier, younger listings (later
+    // firstSeen) go first — they have more of their 48h comp window left, so a
+    // vanish for them is more likely to still be recordable by the time the cap
+    // is reached.
+    .orderBy(sql`${listings.lastProbedAt} asc nulls first`, desc(listings.firstSeen))
     .limit(cap);
 
   let compsWritten = 0;

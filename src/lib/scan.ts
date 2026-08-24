@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { CATEGORY_IDS } from "@/lib/ebay/categories";
-import { BudgetExceededError, type getItemDetail, type searchNewlyListed } from "@/lib/ebay/client";
+import { BudgetExceededError, getTodaySpend, type getItemDetail, type searchNewlyListed } from "@/lib/ebay/client";
 import { normalizeListing } from "@/lib/normalize";
 import { matchListing, type Game } from "@/lib/match";
 import { recomputeReferences, scoreListing } from "@/lib/reference";
@@ -20,12 +20,13 @@ export type TickReport = {
     { fetched: number; accepted: number; dropped: number; detailFetches: number; pagesFetched: number; samplingGap: boolean }
   >;
   budgetStopped: boolean;
-  // Present only once the corresponding phase actually starts (see the 35s
-  // wall-clock guard below) — each sub-key is independently optional because
-  // the guard is checked separately before each phase and a slow tick can run
-  // one sweep but not the other. Shapes derived from the sweep functions
-  // themselves rather than duplicated, so a future change to their return
-  // value can't silently drift out of sync with this type.
+  // Present only once the corresponding phase actually starts (see the
+  // POST_INGEST_BUDGET_MS wall-clock guard below) — each sub-key is
+  // independently optional because the guard is checked separately before
+  // each phase and a slow tick can run one sweep but not the other. Shapes
+  // derived from the sweep functions themselves rather than duplicated, so a
+  // future change to their return value can't silently drift out of sync
+  // with this type.
   sweeps?: {
     auctions?: Awaited<ReturnType<typeof sweepEndedAuctions>>;
     bins?: Awaited<ReturnType<typeof sweepAgedBins>>;
@@ -33,14 +34,16 @@ export type TickReport = {
   referencesRecomputed?: number;
 };
 
-// Wall-clock (not the injectable `now`) budget for the tick's post-ingestion
-// phases: nightly recompute and both sweeps. Vercel's function cap is 60s: the
-// per-category ingestion loop above already eats a variable, unbounded share of
-// it (network calls to eBay), so these phases each re-check the remaining
-// wall-clock budget immediately before starting and skip themselves — no error,
-// no dead letter — if too little is left. Skipped work is just normal
-// backpressure, picked up again on the next tick.
-const POST_INGEST_BUDGET_MS = 35_000;
+// Derived timing budget (final review): the route's maxDuration is 120s (kept in
+// sync manually — Next.js requires a static literal there). Ingestion yields at
+// 75s so the post-ingestion phases always get a bounded window; a timed-out
+// ingestion exits with `exhausted` still false, so the existing sampling_gap
+// path records the bounded loss and the cursor still advances. This converts the
+// former killed-mid-loop failure (frozen cursor, silent loss) into the designed
+// observable-loss path.
+export const TICK_MAX_DURATION_S = 120;
+const INGEST_BUDGET_MS = 75_000;
+const POST_INGEST_BUDGET_MS = (TICK_MAX_DURATION_S - 25) * 1000; // 95s for nightly + sweeps
 
 // Entries list, not an object literal: unverified sports IDs are all the literal
 // "TBV" and would collapse into a single object key. Skipping them keeps ticks
@@ -56,12 +59,13 @@ const GAMES: [string, Game][] = (
 
 export async function runScanTick(
   db: Db,
-  deps: { search: typeof searchNewlyListed; detail: typeof getItemDetail; now?: () => Date },
+  deps: { search: typeof searchNewlyListed; detail: typeof getItemDetail; now?: () => Date; clock?: () => number },
 ): Promise<TickReport> {
-  const tickStart = Date.now();
+  const clock = deps.clock ?? Date.now;
+  const tickStart = clock();
   const now = deps.now?.() ?? new Date();
   const report: TickReport = { perCategory: {}, budgetStopped: false };
-  const withinPostIngestBudget = () => Date.now() - tickStart <= POST_INGEST_BUDGET_MS;
+  const withinPostIngestBudget = () => clock() - tickStart <= POST_INGEST_BUDGET_MS;
 
   for (const [categoryId, game] of GAMES) {
     const stats = { fetched: 0, accepted: 0, dropped: 0, detailFetches: 0, pagesFetched: 0, samplingGap: false };
@@ -73,13 +77,19 @@ export async function runScanTick(
       let exhausted = false;
 
       for (let page = 0; page < MAX_PAGES_HARD; page++) {
+        // Ingestion time guard (final review, item a): every page after the
+        // first re-checks the budget before paying for another eBay round
+        // trip. Leaving `exhausted` false here routes a time-out through the
+        // same sampling_gap dead-letter path as the page-cap case below.
+        if (page > 0 && clock() - tickStart > INGEST_BUDGET_MS) break;
         const { items } = await deps.search(db, { categoryId, sinceIso: since.toISOString(), offset: page * 200 });
         stats.pagesFetched++;
         if (items.length === 0) { exhausted = true; break; }
 
         // Neon's http driver makes every DB call a full round trip — batch the
         // page's existence check and lastSeen refresh (2 round trips per page)
-        // instead of paying 2 per item, or burst ticks blow the 60s function cap.
+        // instead of paying 2 per item, or burst ticks blow the function's
+        // maxDuration cap.
         const pageIds = items.map((i) => i.itemId);
         const existingRows = await db
           .select({ id: listings.ebayItemId })
@@ -217,7 +227,16 @@ export async function runScanTick(
     }
   }
 
-  if (!report.budgetStopped && withinPostIngestBudget()) {
+  // Soft ceiling (final review, item f): once today's api_budget spend passes
+  // this, skip both sweeps for the rest of the tick. Not a failure — normal
+  // backpressure protecting next-day ingestion budget if the cron cadence ever
+  // tightens — so report.sweeps simply stays undefined and no dead letter is
+  // written. Computed once, like the other two guards, and reused by both
+  // phase checks below.
+  const SWEEP_SOFT_CEILING = 3_600;
+  const underSweepCeiling = (await getTodaySpend(db)) <= SWEEP_SOFT_CEILING;
+
+  if (!report.budgetStopped && underSweepCeiling && withinPostIngestBudget()) {
     try {
       report.sweeps = { ...report.sweeps, auctions: await sweepEndedAuctions(db, { detail: deps.detail }) };
     } catch (e) {
@@ -229,7 +248,7 @@ export async function runScanTick(
     }
   }
 
-  if (!report.budgetStopped && withinPostIngestBudget()) {
+  if (!report.budgetStopped && underSweepCeiling && withinPostIngestBudget()) {
     try {
       report.sweeps = { ...report.sweeps, bins: await sweepAgedBins(db, { detail: deps.detail }) };
     } catch (e) {

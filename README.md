@@ -55,7 +55,7 @@ Shows last 100 matched listings with card name, title, slab details, price, and 
 **What a score means:** Each matched listing is scored against a reference price for its (card, grader, grade) combination. The score is a percentage difference from the reference:
 - Negative score = the listing is *overpriced* (above the reference)
 - Positive score = the listing is *underpriced* (below the reference; desirable)
-- Score formula: `(price - reference) / reference × 100%`
+- Score formula: `Score = (reference − (price + shipping)) / reference × 100%` — positive = under reference
 
 **Reference eligibility:** A reference price appears once any (card, grader, grade) accumulates:
 - **3+ comps in the last 30 days**, *or*

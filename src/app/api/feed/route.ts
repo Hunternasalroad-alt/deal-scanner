@@ -4,7 +4,8 @@ import { getDb } from "@/db/client";
 import { cards, listings } from "@/db/schema";
 
 export async function GET(req: NextRequest) {
-  const limit = Math.min(Number(req.nextUrl.searchParams.get("limit") ?? 50), 200);
+  const raw = Number(req.nextUrl.searchParams.get("limit") ?? 50);
+  const limit = Number.isFinite(raw) ? Math.min(Math.max(1, Math.trunc(raw)), 200) : 50;
   const db = getDb();
   const rows = await db
     .select({

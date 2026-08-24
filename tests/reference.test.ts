@@ -39,4 +39,8 @@ describe("scoreListing", () => {
   });
   it("goes negative for overpriced listings", () =>
     expect(scoreListing({ ...base, totalCents: 600000, compMedianCents: 520000 })!.scoreBps).toBeLessThan(0));
+  it("returns null rather than dividing by a zero reference", () => {
+    expect(scoreListing({ ...base, totalCents: 1000, compMedianCents: 0, rawMarketCents: 0 })).toBeNull();
+    expect(scoreListing({ ...base, totalCents: 1000, rawMarketCents: 0 })).toBeNull();
+  });
 });

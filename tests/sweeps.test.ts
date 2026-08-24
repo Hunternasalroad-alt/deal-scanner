@@ -102,18 +102,19 @@ describe("sweepAgedBins", () => {
     expect(c).toMatchObject({ soldPriceCents: 25000, source: "bin_disappeared" });
   });
 
-  it("slow disappearance is ended, not a comp; young and recently-probed BINs are skipped", async () => {
+  it("skips out-of-window, young, and recently-probed BINs entirely", async () => {
     const { db } = await makeTestDb();
     await db.insert(listings).values([
-      bin("v1|b2|0", 80),                                     // older than 48h → ended on vanish
-      bin("v1|b3|0", 2),                                      // too young to probe
-      bin("v1|b4|0", 24, { lastProbedAt: new Date() }),       // probed too recently
+      bin("v1|b2|0", 80),                               // outside the 48h comp window — not probed
+      bin("v1|b3|0", 2),                                // too young
+      bin("v1|b4|0", 24, { lastProbedAt: new Date() }), // probed too recently
     ]);
-    const detail = vi.fn().mockRejectedValue(new EbayHttpError(404, "gone"));
+    const detail = vi.fn();
     const r = await sweepAgedBins(db, { detail: detail as never });
-    expect(r).toEqual({ probed: 1, compsWritten: 0 });
+    expect(r).toEqual({ probed: 0, compsWritten: 0 });
+    expect(detail).not.toHaveBeenCalled();
     const b2 = (await db.select().from(listings)).find((x) => x.ebayItemId === "v1|b2|0");
-    expect(b2?.status).toBe("ended");
+    expect(b2?.status).toBe("active"); // hygiene deferred, not silently "ended"
   });
 
   it("still-live BIN just refreshes lastProbedAt", async () => {
@@ -127,16 +128,15 @@ describe("sweepAgedBins", () => {
     expect(l.lastProbedAt).not.toBeNull();
   });
 
-  it("never-probed (null) sorts before an eligible already-probed row", async () => {
+  it("probes never-probed before previously-probed, youngest first", async () => {
     const { db } = await makeTestDb();
-    // b7 was probed 20h ago (eligible: >12h), b6 has never been probed (null).
-    // Plain asc() would put nulls LAST in Postgres, visiting b7 first — wrong.
     await db.insert(listings).values([
-      bin("v1|b7|0", 60, { lastProbedAt: new Date(Date.now() - 20 * 3600_000) }),
-      bin("v1|b6|0", 60),
+      bin("v1|b7|0", 30, { lastProbedAt: new Date(Date.now() - 20 * 3600_000) }),
+      bin("v1|b6|0", 30),
+      bin("v1|b8|0", 12),
     ]);
     const detail = vi.fn(async (_db: unknown, _itemId: string) => ({ itemId: "x", title: "t", itemCreationDate: "", buyingOptions: ["FIXED_PRICE"] }));
-    await sweepAgedBins(db, { detail: detail as never });
-    expect(detail.mock.calls.map((c) => c[1])).toEqual(["v1|b6|0", "v1|b7|0"]);
+    await sweepAgedBins(db, { detail: detail as never }, 2);
+    expect(detail.mock.calls.map((c) => c[1])).toEqual(["v1|b8|0", "v1|b6|0"]); // null-probed youngest-first; b7 (probed) misses the cap
   });
 });

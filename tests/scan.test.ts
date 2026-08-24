@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { makeTestDb } from "./helpers/testDb";
 import { runScanTick } from "@/lib/scan";
-import { cards, comps, cursorState, deadLetters, listings, rawPrices, referencePrices } from "@/db/schema";
+import { apiBudget, cards, comps, cursorState, deadLetters, listings, rawPrices, referencePrices } from "@/db/schema";
 import { BudgetExceededError, type EbayItemSummary } from "@/lib/ebay/client";
 
 const mk = (id: string, title: string, minsAgo: number, price = "150.00"): EbayItemSummary => ({
@@ -107,6 +107,21 @@ describe("runScanTick", () => {
     expect((await db.select().from(deadLetters)).filter((d) => d.kind === "sampling_gap")).toHaveLength(0);
   });
 
+  it("yields ingestion at the time budget and records the gap", async () => {
+    const { db } = await makeTestDb();
+    let t = 0;
+    const clock = () => t;
+    const search = vi.fn(async (_db, opts) => {
+      t += 40_000; // each page fetch "costs" 40s of wall clock
+      return { total: 99999, items: mkPage(opts.offset / 200, 200) };
+    });
+    const detail = vi.fn(async () => { throw new Error("skip"); });
+    const r = await runScanTick(db, { search: search as never, detail: detail as never, clock });
+    expect(r.perCategory["183454"]).toMatchObject({ pagesFetched: 2, samplingGap: true }); // 40s, 80s → guard stops page 3
+    expect((await db.select().from(deadLetters)).some((d) => d.kind === "sampling_gap")).toBe(true);
+    expect((await db.select().from(cursorState)).length).toBeGreaterThan(0);
+  });
+
   it("scores an accepted high-confidence listing against the raw floor at ingest", async () => {
     const { db } = await makeTestDb();
     const [card] = await db.insert(cards).values({ game: "pokemon", name: "Umbreon ex", setName: "PRE", cardNumber: "161", createdFrom: "catalog" }).returning();
@@ -166,5 +181,15 @@ describe("runScanTick", () => {
     const r = await runScanTick(db, { search: search as never, detail: detail as never });
     expect(r.sweeps?.auctions).toEqual({ checked: 1, compsWritten: 0 });
     expect(r.sweeps?.bins).toEqual({ probed: 0, compsWritten: 0 });
+  });
+
+  it("skips both sweeps once today's api spend passes the soft ceiling", async () => {
+    const { db } = await makeTestDb();
+    const today = new Date().toISOString().slice(0, 10);
+    await db.insert(apiBudget).values({ day: today, kind: "search", count: 3_700 });
+    const search = vi.fn(async () => ({ total: 0, items: [] }));
+    const detail = vi.fn();
+    const r = await runScanTick(db, { search: search as never, detail: detail as never });
+    expect(r.sweeps).toBeUndefined();
   });
 });

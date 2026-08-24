@@ -11,7 +11,7 @@ jobs:
     steps:
       - name: Call /api/scan
         run: |
-          code=$(curl -s --max-time 90 -o /tmp/out -w "%{http_code}" -X POST \
+          code=$(curl -s --max-time 150 -o /tmp/out -w "%{http_code}" -X POST \
             -H "authorization: Bearer ${{ secrets.SCAN_SECRET }}" \
             "${{ secrets.SCAN_URL }}")
           cat /tmp/out

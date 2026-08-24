@@ -5,7 +5,8 @@ import { runScanTick } from "@/lib/scan";
 import { getItemDetail, searchNewlyListed } from "@/lib/ebay/client";
 import { deadLetters } from "@/db/schema";
 
-export const maxDuration = 60;
+// keep in sync with TICK_MAX_DURATION_S in src/lib/scan.ts
+export const maxDuration = 120;
 
 export async function POST(req: NextRequest) {
   if (req.headers.get("authorization") !== `Bearer ${env.SCAN_SECRET}`)

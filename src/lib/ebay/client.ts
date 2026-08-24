@@ -55,10 +55,19 @@ export function resetEbayAuthCache(): void {
   cached = null;
 }
 
-export async function checkAndCount(db: Db, kind: "search" | "detail"): Promise<void> {
+// Sum of every kind's count for today (UTC day, matching apiBudget.day's
+// format). Extracted out of checkAndCount so callers that only need to read
+// the running total — e.g. scan.ts's sweep soft ceiling — don't have to
+// duplicate the query or pay for a write.
+export async function getTodaySpend(db: Db): Promise<number> {
   const day = new Date().toISOString().slice(0, 10);
   const rows = await db.select().from(apiBudget).where(eq(apiBudget.day, day));
-  const total = rows.reduce((s, r) => s + r.count, 0);
+  return rows.reduce((s, r) => s + r.count, 0);
+}
+
+export async function checkAndCount(db: Db, kind: "search" | "detail"): Promise<void> {
+  const day = new Date().toISOString().slice(0, 10);
+  const total = await getTodaySpend(db);
   if (total >= DAILY_HARD_STOP) throw new BudgetExceededError(`daily budget ${total}/${DAILY_HARD_STOP}`);
   await db
     .insert(apiBudget)

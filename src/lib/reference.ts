@@ -74,12 +74,12 @@ export function scoreListing(input: {
 }): { scoreBps: number; scoreBasis: "comp_median" | "raw_floor" } | null {
   const { totalCents, grade, compMedianCents, rawMarketCents } = input;
 
-  if (compMedianCents != null)
+  if (compMedianCents != null && compMedianCents > 0)
     return { scoreBps: Math.round((1 - totalCents / compMedianCents) * 10000), scoreBasis: "comp_median" };
 
   if (grade !== null && grade in GRADE_FLOOR_MULTIPLIER && rawMarketCents != null) {
     const ref = rawMarketCents * GRADE_FLOOR_MULTIPLIER[grade];
-    return { scoreBps: Math.round((1 - totalCents / ref) * 10000), scoreBasis: "raw_floor" };
+    if (ref > 0) return { scoreBps: Math.round((1 - totalCents / ref) * 10000), scoreBasis: "raw_floor" };
   }
 
   return null;
