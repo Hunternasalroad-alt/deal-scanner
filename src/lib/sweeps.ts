@@ -1,4 +1,4 @@
-import { and, asc, eq, lt, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { comps, deadLetters, listings } from "@/db/schema";
 import type { Db } from "@/db/client";
 import { BudgetExceededError, EbayHttpError, type getItemDetail } from "@/lib/ebay/client";
@@ -74,4 +74,100 @@ export async function sweepEndedAuctions(
   }
 
   return { checked: candidates.length, compsWritten };
+}
+
+// spec §14.4(b): a BIN listing never has an end_time to poll, so vanishing
+// (404/410, or eventually a detail response whose itemEndDate has passed) is
+// the only sold signal. A vanish observed soon after firstSeen is treated as
+// a sale at the listed price; a slow vanish is not — sellers commonly let BIN
+// listings lapse or relist them, and that isn't a sale signal.
+export async function sweepAgedBins(
+  db: Db,
+  deps: { detail: typeof getItemDetail },
+  cap = 10,
+): Promise<{ probed: number; compsWritten: number }> {
+  const candidates = await db
+    .select()
+    .from(listings)
+    .where(
+      and(
+        eq(listings.listingType, "bin"),
+        eq(listings.status, "active"),
+        lt(listings.firstSeen, sql`now() - interval '6 hours'`),
+        // Unlike sweepEndedAuctions' endTime filter, firstSeen is set on every
+        // listing — including scan.ts's dropped/unmatched rows, which never get
+        // a grader. Without this, an aged dropped BIN would become a candidate
+        // here and blow up on comps.grader's NOT NULL constraint once vanished.
+        isNotNull(listings.grader),
+        or(isNull(listings.lastProbedAt), lt(listings.lastProbedAt, sql`now() - interval '12 hours'`)),
+      ),
+    )
+    // Ordering trap: plain asc() is NULLS LAST in Postgres, which would starve
+    // never-probed listings behind already-probed ones forever. The explicit
+    // fragment below puts them first.
+    .orderBy(sql`${listings.lastProbedAt} asc nulls first`, asc(listings.firstSeen))
+    .limit(cap);
+
+  let compsWritten = 0;
+
+  // Shared by both vanish-detection paths (thrown 404/410, and a detail body
+  // whose itemEndDate has already passed): decide sale-vs-lapse from how long
+  // after firstSeen the disappearance was observed, then write the outcome.
+  const recordVanished = async (
+    row: (typeof candidates)[number],
+    grader: NonNullable<(typeof candidates)[number]["grader"]>,
+  ): Promise<boolean> => {
+    const withinSaleWindow = Date.now() - row.firstSeen.getTime() <= 48 * 3600_000;
+    if (!withinSaleWindow) {
+      await db.update(listings).set({ status: "ended" }).where(eq(listings.ebayItemId, row.ebayItemId));
+      return false;
+    }
+    const inserted = await db
+      .insert(comps)
+      .values({
+        cardId: row.cardId,
+        grader,
+        grade: row.grade ?? "",
+        soldPriceCents: row.priceCents,
+        soldAt: sql`now()`,
+        source: "bin_disappeared",
+        ebayItemId: row.ebayItemId,
+      })
+      .onConflictDoNothing()
+      .returning();
+    await db.update(listings).set({ status: "sold_probable" }).where(eq(listings.ebayItemId, row.ebayItemId));
+    return inserted.length > 0;
+  };
+
+  for (const row of candidates) {
+    const grader = row.grader!; // guaranteed by isNotNull(listings.grader) above
+
+    try {
+      // Stamp before the detail call, not after: a crash mid-fetch must not
+      // leave lastProbedAt untouched, or this listing gets re-probed every tick.
+      await db.update(listings).set({ lastProbedAt: sql`now()` }).where(eq(listings.ebayItemId, row.ebayItemId));
+
+      const detail = await deps.detail(db, row.ebayItemId);
+      const alreadyEnded = detail.itemEndDate !== undefined && new Date(detail.itemEndDate).getTime() <= Date.now();
+      if (alreadyEnded && (await recordVanished(row, grader))) compsWritten++;
+      // else: still purchasable — nothing else to do, lastProbedAt already refreshed.
+    } catch (e) {
+      // A gone/removed item (404) or a BIN listing eBay no longer serves (410)
+      // is the same vanish signal as an itemEndDate already in the past.
+      if (e instanceof EbayHttpError && (e.status === 404 || e.status === 410)) {
+        if (await recordVanished(row, grader)) compsWritten++;
+        continue;
+      }
+      if (e instanceof BudgetExceededError) throw e;
+      // Anything else (network blip, unexpected HTTP status, parse failure):
+      // record and move on. The listing stays "active" so the next tick retries it.
+      await db.insert(deadLetters).values({
+        kind: "bin_sweep",
+        payload: { ebayItemId: row.ebayItemId },
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  return { probed: candidates.length, compsWritten };
 }

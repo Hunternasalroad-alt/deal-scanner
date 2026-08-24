@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { makeTestDb } from "./helpers/testDb";
-import { sweepEndedAuctions } from "@/lib/sweeps";
+import { sweepAgedBins, sweepEndedAuctions } from "@/lib/sweeps";
 import { BudgetExceededError, EbayHttpError } from "@/lib/ebay/client";
 import { cards, comps, deadLetters, listings } from "@/db/schema";
 
@@ -8,6 +8,12 @@ const auction = (id: string, endedMinsAgo: number, over: object = {}) => ({
   ebayItemId: id, title: `t-${id}`, categoryId: "183454", priceCents: 10000,
   listingType: "auction" as const, grader: "PSA" as const, grade: "10",
   endTime: new Date(Date.now() - endedMinsAgo * 60000), ...over,
+});
+
+const bin = (id: string, ageHours: number, over: object = {}) => ({
+  ebayItemId: id, title: `t-${id}`, categoryId: "183454", priceCents: 25000,
+  listingType: "bin" as const, grader: "SGC" as const, grade: "10",
+  firstSeen: new Date(Date.now() - ageHours * 3600_000), ...over,
 });
 
 describe("sweepEndedAuctions", () => {
@@ -82,5 +88,55 @@ describe("sweepEndedAuctions", () => {
     await expect(sweepEndedAuctions(db, { detail: detail as never })).rejects.toBeInstanceOf(BudgetExceededError);
     const [l] = await db.select().from(listings);
     expect(l.status).toBe("active"); // sweep aborted mid-way; listing untouched
+  });
+});
+
+describe("sweepAgedBins", () => {
+  it("fast disappearance becomes a sold_probable comp", async () => {
+    const { db } = await makeTestDb();
+    await db.insert(listings).values(bin("v1|b1|0", 12));
+    const detail = vi.fn().mockRejectedValue(new EbayHttpError(404, "gone"));
+    const r = await sweepAgedBins(db, { detail: detail as never });
+    expect(r).toEqual({ probed: 1, compsWritten: 1 });
+    const [c] = await db.select().from(comps);
+    expect(c).toMatchObject({ soldPriceCents: 25000, source: "bin_disappeared" });
+  });
+
+  it("slow disappearance is ended, not a comp; young and recently-probed BINs are skipped", async () => {
+    const { db } = await makeTestDb();
+    await db.insert(listings).values([
+      bin("v1|b2|0", 80),                                     // older than 48h → ended on vanish
+      bin("v1|b3|0", 2),                                      // too young to probe
+      bin("v1|b4|0", 24, { lastProbedAt: new Date() }),       // probed too recently
+    ]);
+    const detail = vi.fn().mockRejectedValue(new EbayHttpError(404, "gone"));
+    const r = await sweepAgedBins(db, { detail: detail as never });
+    expect(r).toEqual({ probed: 1, compsWritten: 0 });
+    const b2 = (await db.select().from(listings)).find((x) => x.ebayItemId === "v1|b2|0");
+    expect(b2?.status).toBe("ended");
+  });
+
+  it("still-live BIN just refreshes lastProbedAt", async () => {
+    const { db } = await makeTestDb();
+    await db.insert(listings).values(bin("v1|b5|0", 12));
+    const detail = vi.fn(async () => ({ itemId: "v1|b5|0", title: "t", itemCreationDate: "", buyingOptions: ["FIXED_PRICE"] }));
+    const r = await sweepAgedBins(db, { detail: detail as never });
+    expect(r).toEqual({ probed: 1, compsWritten: 0 });
+    const [l] = await db.select().from(listings);
+    expect(l.status).toBe("active");
+    expect(l.lastProbedAt).not.toBeNull();
+  });
+
+  it("never-probed (null) sorts before an eligible already-probed row", async () => {
+    const { db } = await makeTestDb();
+    // b7 was probed 20h ago (eligible: >12h), b6 has never been probed (null).
+    // Plain asc() would put nulls LAST in Postgres, visiting b7 first — wrong.
+    await db.insert(listings).values([
+      bin("v1|b7|0", 60, { lastProbedAt: new Date(Date.now() - 20 * 3600_000) }),
+      bin("v1|b6|0", 60),
+    ]);
+    const detail = vi.fn(async (_db: unknown, _itemId: string) => ({ itemId: "x", title: "t", itemCreationDate: "", buyingOptions: ["FIXED_PRICE"] }));
+    await sweepAgedBins(db, { detail: detail as never });
+    expect(detail.mock.calls.map((c) => c[1])).toEqual(["v1|b6|0", "v1|b7|0"]);
   });
 });
