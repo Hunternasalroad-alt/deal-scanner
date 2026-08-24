@@ -93,4 +93,16 @@ describe("runScanTick", () => {
     expect(dl.some((d) => d.kind === "sampling_gap")).toBe(true);
     expect((await db.select().from(cursorState)).length).toBeGreaterThan(0);
   });
+
+  it("a short 20th page is clean exhaustion, not a gap", async () => {
+    const { db } = await makeTestDb();
+    const search = vi.fn(async (_db, opts) =>
+      opts.categoryId === "183454"
+        ? { total: 3950, items: mkPage(opts.offset / 200, opts.offset / 200 < 19 ? 200 : 150) }
+        : { total: 0, items: [] });
+    const detail = vi.fn(async () => { throw new Error("skip detail"); });
+    const r = await runScanTick(db, { search: search as never, detail: detail as never });
+    expect(r.perCategory["183454"]).toMatchObject({ pagesFetched: 20, samplingGap: false });
+    expect((await db.select().from(deadLetters)).filter((d) => d.kind === "sampling_gap")).toHaveLength(0);
+  });
 });

@@ -46,11 +46,12 @@ export async function runScanTick(
       const [cursor] = await db.select().from(cursorState).where(eq(cursorState.categoryId, categoryId));
       const since = new Date((cursor?.lastItemTs.getTime() ?? now.getTime() - FIRST_RUN_LOOKBACK_MS) - OVERLAP_MS);
       let newestSeen = cursor?.lastItemTs ?? since;
+      let exhausted = false;
 
       for (let page = 0; page < MAX_PAGES_HARD; page++) {
         const { items } = await deps.search(db, { categoryId, sinceIso: since.toISOString(), offset: page * 200 });
         stats.pagesFetched++;
-        if (items.length === 0) break;
+        if (items.length === 0) { exhausted = true; break; }
 
         // Neon's http driver makes every DB call a full round trip — batch the
         // page's existence check and lastSeen refresh (2 round trips per page)
@@ -111,12 +112,10 @@ export async function runScanTick(
             raw: rawForStorage,
           }).onConflictDoNothing();
         }
-        if (items.length < 200) break;
+        if (items.length < 200) { exhausted = true; break; }
       }
 
-      // A run that lands exactly on the 20th full page is indistinguishable from
-      // one that overflowed — that ambiguity is resolved conservatively: flag it.
-      if (stats.pagesFetched === MAX_PAGES_HARD) {
+      if (!exhausted) {
         stats.samplingGap = true;
         await db.insert(deadLetters).values({
           kind: "sampling_gap",
