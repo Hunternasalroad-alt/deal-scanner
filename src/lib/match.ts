@@ -30,9 +30,10 @@ export async function matchListing(db: Db, game: Game, n: Accepted): Promise<Mat
   if (game === "pokemon") {
     if (cardNumberHint) {
       const byNumber = await db.select().from(cards).where(and(eq(cards.game, "pokemon"), eq(cards.cardNumber, cardNumberHint)));
+      const usable = usableTokens(nameTokens);
       const nameHits = byNumber.filter((c) => {
         const words = nameWords(c.name);
-        return usableTokens(nameTokens).some((t) => words.has(t.toLowerCase()));
+        return usable.some((t) => words.has(t.toLowerCase()));
       });
       if (nameHits.length === 1) return { cardId: nameHits[0].id, confidence: "high", createdCard: false };
       if (byNumber.length === 1) return { cardId: byNumber[0].id, confidence: "medium", createdCard: false };

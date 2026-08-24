@@ -73,4 +73,16 @@ describe("matchListing", () => {
     const r = await matchListing(db, "pokemon", n);
     expect(["high", "medium"]).toContain(r.confidence);
   });
+  it("disambiguates via whole-token nameHits when a decoy name contains a junk token as a substring", async () => {
+    const { db } = await makeTestDb();
+    await db.insert(cards).values([
+      { game: "pokemon", name: "Sawsbuck", setName: "Temporal Forces", cardNumber: "50", createdFrom: "catalog" },
+      { game: "pokemon", name: "Venusaur", setName: "Temporal Forces", cardNumber: "50", createdFrom: "catalog" },
+    ]);
+    const n = normalizeListing(base("2024 POKEMON TEF EN-TEMPORAL FORCES RARE #50 SAWSBUCK PSA 10"));
+    if (n.kind !== "accepted") throw new Error("expected accepted");
+    const r = await matchListing(db, "pokemon", n);
+    expect(r.confidence).toBe("high");
+    expect(r.cardId).not.toBeNull();
+  });
 });
