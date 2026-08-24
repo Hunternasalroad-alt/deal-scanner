@@ -1,13 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { makeTestDb } from "./helpers/testDb";
 import { runScanTick } from "@/lib/scan";
-import { cards, listings, cursorState } from "@/db/schema";
+import { cards, listings, cursorState, deadLetters } from "@/db/schema";
 import { BudgetExceededError, type EbayItemSummary } from "@/lib/ebay/client";
 
 const mk = (id: string, title: string, minsAgo: number, price = "150.00"): EbayItemSummary => ({
   itemId: id, title, itemCreationDate: new Date(Date.now() - minsAgo * 60000).toISOString(),
   price: { value: price }, buyingOptions: ["FIXED_PRICE"],
 });
+
+const mkPage = (page: number, count: number): EbayItemSummary[] =>
+  Array.from({ length: count }, (_, i) => mk(`v1|p${page}i${i}|0`, `Umbreon ex 161/131 PSA 10 lot ${page}-${i}`, page * 10 + 5));
 
 describe("runScanTick", () => {
   it("ingests, drops scams, matches, is idempotent across double-run", async () => {
@@ -63,5 +66,31 @@ describe("runScanTick", () => {
     const r = await runScanTick(db, { search: search as never, detail: detail as never });
     expect(r.perCategory["183454"]).toMatchObject({ accepted: 1, detailFetches: 0 });
     expect(detail).not.toHaveBeenCalled();
+  });
+
+  it("pages until the results run out and reports depth", async () => {
+    const { db } = await makeTestDb();
+    const search = vi.fn(async (_db, opts) => {
+      if (opts.categoryId !== "183454") return { total: 0, items: [] };
+      const page = opts.offset / 200;
+      return page < 2 ? { total: 450, items: mkPage(page, 200) } : { total: 450, items: mkPage(2, 50) };
+    });
+    const detail = vi.fn(async () => { throw new Error("skip detail"); });
+    const r = await runScanTick(db, { search: search as never, detail: detail as never });
+    expect(r.perCategory["183454"]).toMatchObject({ fetched: 450, pagesFetched: 3, samplingGap: false });
+  });
+
+  it("flags a sampling gap at the hard page cap and still advances the cursor", async () => {
+    const { db } = await makeTestDb();
+    const search = vi.fn(async (_db, opts) =>
+      opts.categoryId === "183454"
+        ? { total: 99999, items: mkPage(opts.offset / 200, 200) }
+        : { total: 0, items: [] });
+    const detail = vi.fn(async () => { throw new Error("skip detail"); });
+    const r = await runScanTick(db, { search: search as never, detail: detail as never });
+    expect(r.perCategory["183454"]).toMatchObject({ pagesFetched: 20, samplingGap: true });
+    const dl = await db.select().from(deadLetters);
+    expect(dl.some((d) => d.kind === "sampling_gap")).toBe(true);
+    expect((await db.select().from(cursorState)).length).toBeGreaterThan(0);
   });
 });

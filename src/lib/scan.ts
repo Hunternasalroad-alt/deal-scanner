@@ -3,17 +3,20 @@ import { CATEGORY_IDS } from "@/lib/ebay/categories";
 import { BudgetExceededError, type getItemDetail, type searchNewlyListed } from "@/lib/ebay/client";
 import { normalizeListing } from "@/lib/normalize";
 import { matchListing, type Game } from "@/lib/match";
-import { cursorState, listings } from "@/db/schema";
+import { cursorState, deadLetters, listings } from "@/db/schema";
 import type { Db } from "@/db/client";
 
 const OVERLAP_MS = 10 * 60_000;
 const FIRST_RUN_LOOKBACK_MS = 30 * 60_000;
 const DETAIL_CAP_PER_CATEGORY = 8;
 const DETAIL_MIN_PRICE_CENTS = 5000;
-const MAX_PAGES = 3;
+const MAX_PAGES_HARD = 20; // spec §14.1: page to the cursor; cap bounds a pathological gap
 
 export type TickReport = {
-  perCategory: Record<string, { fetched: number; accepted: number; dropped: number; detailFetches: number }>;
+  perCategory: Record<
+    string,
+    { fetched: number; accepted: number; dropped: number; detailFetches: number; pagesFetched: number; samplingGap: boolean }
+  >;
   budgetStopped: boolean;
 };
 
@@ -37,15 +40,16 @@ export async function runScanTick(
   const report: TickReport = { perCategory: {}, budgetStopped: false };
 
   for (const [categoryId, game] of GAMES) {
-    const stats = { fetched: 0, accepted: 0, dropped: 0, detailFetches: 0 };
+    const stats = { fetched: 0, accepted: 0, dropped: 0, detailFetches: 0, pagesFetched: 0, samplingGap: false };
     report.perCategory[categoryId] = stats;
     try {
       const [cursor] = await db.select().from(cursorState).where(eq(cursorState.categoryId, categoryId));
       const since = new Date((cursor?.lastItemTs.getTime() ?? now.getTime() - FIRST_RUN_LOOKBACK_MS) - OVERLAP_MS);
       let newestSeen = cursor?.lastItemTs ?? since;
 
-      for (let page = 0; page < MAX_PAGES; page++) {
+      for (let page = 0; page < MAX_PAGES_HARD; page++) {
         const { items } = await deps.search(db, { categoryId, sinceIso: since.toISOString(), offset: page * 200 });
+        stats.pagesFetched++;
         if (items.length === 0) break;
 
         // Neon's http driver makes every DB call a full round trip — batch the
@@ -108,6 +112,17 @@ export async function runScanTick(
           }).onConflictDoNothing();
         }
         if (items.length < 200) break;
+      }
+
+      // A run that lands exactly on the 20th full page is indistinguishable from
+      // one that overflowed — that ambiguity is resolved conservatively: flag it.
+      if (stats.pagesFetched === MAX_PAGES_HARD) {
+        stats.samplingGap = true;
+        await db.insert(deadLetters).values({
+          kind: "sampling_gap",
+          payload: { categoryId, since: since.toISOString(), newestSeen: newestSeen.toISOString() },
+          error: `page cap ${MAX_PAGES_HARD} hit before exhausting results`,
+        });
       }
 
       await db.insert(cursorState).values({ categoryId, lastItemTs: newestSeen })
