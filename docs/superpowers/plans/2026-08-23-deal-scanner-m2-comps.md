@@ -458,6 +458,94 @@ describe("scoreListing", () => {
 
 ---
 
+### Task 7: Final-review fix wave (review-mandated, pre-merge)
+
+**Files:** Modify `src/lib/scan.ts`, `src/app/api/scan/route.ts`, `.github/workflows/scan.yml`, `src/lib/reference.ts`, `src/lib/sweeps.ts`, `src/app/api/feed/route.ts`, `README.md`; tests `tests/scan.test.ts`, `tests/reference.test.ts`, `tests/sweeps.test.ts`.
+
+**(a) Ingestion time guard — the Critical fix.** In `scan.ts`:
+
+```ts
+// Derived timing budget (final review): the route's maxDuration is 120s (kept in
+// sync manually — Next.js requires a static literal there). Ingestion yields at
+// 75s so the post-ingestion phases always get a bounded window; a timed-out
+// ingestion exits with `exhausted` still false, so the existing sampling_gap
+// path records the bounded loss and the cursor still advances. This converts the
+// former killed-mid-loop failure (frozen cursor, silent loss) into the designed
+// observable-loss path.
+export const TICK_MAX_DURATION_S = 120;
+const INGEST_BUDGET_MS = 75_000;
+const POST_INGEST_BUDGET_MS = (TICK_MAX_DURATION_S - 25) * 1000; // 95s for nightly + sweeps
+```
+
+`runScanTick`'s deps gain `clock?: () => number` (defaults `Date.now`); `const tickStart = clock()` at entry. In the page loop, BEFORE each `deps.search` call except the first page: `if (clock() - tickStart > INGEST_BUDGET_MS) break;` (leaving `exhausted` false). The three post-ingestion phase guards switch from the literal `35_000` to `POST_INGEST_BUDGET_MS`, all measured via the same `clock`. New test in `tests/scan.test.ts`:
+
+```ts
+it("yields ingestion at the time budget and records the gap", async () => {
+  const { db } = await makeTestDb();
+  let t = 0;
+  const clock = () => t;
+  const search = vi.fn(async (_db, opts) => {
+    t += 40_000; // each page fetch "costs" 40s of wall clock
+    return { total: 99999, items: mkPage(opts.offset / 200, 200) };
+  });
+  const detail = vi.fn(async () => { throw new Error("skip"); });
+  const r = await runScanTick(db, { search: search as never, detail: detail as never, clock });
+  expect(r.perCategory["183454"]).toMatchObject({ pagesFetched: 2, samplingGap: true }); // 40s, 80s → guard stops page 3
+  expect((await db.select().from(deadLetters)).some((d) => d.kind === "sampling_gap")).toBe(true);
+  expect((await db.select().from(cursorState)).length).toBeGreaterThan(0);
+});
+```
+
+**(b)** `src/app/api/scan/route.ts`: `export const maxDuration = 120;` (static literal; comment: `// keep in sync with TICK_MAX_DURATION_S in src/lib/scan.ts`). **(c)** `.github/workflows/scan.yml`: curl `--max-time 90` → `--max-time 150`.
+
+**(d) Zero-denominator guard.** In `reference.ts` `scoreListing`: the comp-median branch requires `compMedianCents != null && compMedianCents > 0`; the raw-floor branch computes `ref = rawMarketCents * mult` and requires `ref > 0`, else fall through/return null. Tests added to `tests/reference.test.ts`:
+
+```ts
+it("returns null rather than dividing by a zero reference", () => {
+  expect(scoreListing({ ...base, totalCents: 1000, compMedianCents: 0, rawMarketCents: 0 })).toBeNull();
+  expect(scoreListing({ ...base, totalCents: 1000, rawMarketCents: 0 })).toBeNull();
+});
+```
+
+**(e) BIN probe window.** In `sweeps.ts` `sweepAgedBins`: the candidate WHERE gains `gt(listings.firstSeen, sql\`now() - interval '48 hours'\`)` (only in-window listings — the ones that can still yield a comp — are probed; >48h status hygiene is deferred to M3 bulk-expiry), and the secondary ordering flips to youngest-first: `sql\`${listings.lastProbedAt} asc nulls first\`, desc(listings.firstSeen)`. Update the comment accordingly. REPLACE the two affected tests in `tests/sweeps.test.ts` exactly:
+
+```ts
+it("skips out-of-window, young, and recently-probed BINs entirely", async () => {
+  const { db } = await makeTestDb();
+  await db.insert(listings).values([
+    bin("v1|b2|0", 80),                               // outside the 48h comp window — not probed
+    bin("v1|b3|0", 2),                                // too young
+    bin("v1|b4|0", 24, { lastProbedAt: new Date() }), // probed too recently
+  ]);
+  const detail = vi.fn();
+  const r = await sweepAgedBins(db, { detail: detail as never });
+  expect(r).toEqual({ probed: 0, compsWritten: 0 });
+  expect(detail).not.toHaveBeenCalled();
+  const b2 = (await db.select().from(listings)).find((x) => x.ebayItemId === "v1|b2|0");
+  expect(b2?.status).toBe("active"); // hygiene deferred, not silently "ended"
+});
+
+it("probes never-probed before previously-probed, youngest first", async () => {
+  const { db } = await makeTestDb();
+  await db.insert(listings).values([
+    bin("v1|b7|0", 30, { lastProbedAt: new Date(Date.now() - 20 * 3600_000) }),
+    bin("v1|b6|0", 30),
+    bin("v1|b8|0", 12),
+  ]);
+  const detail = vi.fn(async (_db: unknown, _itemId: string) => ({ itemId: "x", title: "t", itemCreationDate: "", buyingOptions: ["FIXED_PRICE"] }));
+  await sweepAgedBins(db, { detail: detail as never }, 2);
+  expect(detail.mock.calls.map((c) => c[1])).toEqual(["v1|b8|0", "v1|b6|0"]); // null-probed youngest-first; b7 (probed) misses the cap
+});
+```
+
+**(f) Daily sweep-spend soft ceiling.** `src/lib/ebay/client.ts` gains `export async function getTodaySpend(db: Db): Promise<number>` (sum of today's `api_budget` rows — extract/reuse the logic `checkAndCount` already has). In `scan.ts`, before the two sweep phases (after the nightly phase): `const SWEEP_SOFT_CEILING = 3_600;` — if `await getTodaySpend(db) > SWEEP_SOFT_CEILING`, skip both sweeps (report.sweeps stays undefined; no dead letter — normal backpressure protecting next-day ingestion if cron cadence ever improves). Test in `tests/scan.test.ts`: seed `apiBudget` with `{ day: today, kind: "search", count: 3_700 }`, run a tick with an empty search mock, assert `r.sweeps` is undefined.
+
+**(g) Feed NaN guard.** `src/app/api/feed/route.ts`: `const raw = Number(req.nextUrl.searchParams.get("limit") ?? 50); const limit = Number.isFinite(raw) ? Math.min(Math.max(1, Math.trunc(raw)), 200) : 50;`
+
+**(h) README formula.** The M2 section's score formula line becomes: `Score = (reference − (price + shipping)) / reference × 100%` — positive = under reference.
+
+**Verify:** full `pnpm test` (75 expected: 71 + 1 timing + 1 zero-ref + 1 ceiling + net ±0 from the two replaced sweep tests +1 new b8 case → recount at run time and report the true number), `pnpm lint`, `pnpm build`, all pristine. **Commit:** `fix: final-review wave — bounded ingestion time, zero-ref guard, BIN window, sweep ceiling` with the repo trailer.
+
 ## Spec deviations (deliberate)
 - Nightly reference recompute rides inside the first post-09:00-UTC tick (spec §4 "nightly" language) rather than a separate scheduler — one moving part, same 35s guard as the sweeps.
 - Automated raw-price re-sync deferred per spec §14.6.
