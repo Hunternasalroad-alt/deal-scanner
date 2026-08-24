@@ -61,9 +61,14 @@ export function normalizeListing(item: EbayItemSummary, detail?: EbayItemDetail)
 
   // 4. Title facts for the matcher.
   const yearM = /\b(19[5-9]\d|20[0-2]\d)\b/.exec(title);
-  const numM = /#\s?(\w{1,6})\b/.exec(title) ?? /\b(\d{1,3})\s*\/\s*\d{1,3}\b/.exec(title);
-  const nameTokens = title
-    .replace(GRADER_RX, " ")
+  // Grader-stripped first: a lettered gallery/promo number (GG40, TG12, SM9a,
+  // SWSH250) must never be extracted from "PSA 10" or similar grader text.
+  const strippedTitle = title.replace(GRADER_RX, " ");
+  const numM =
+    /#\s?(\w{1,6})\b/.exec(title) ??
+    /\b(\d{1,3})\s*\/\s*\d{1,3}\b/.exec(title) ??
+    /\b([A-Z]{2,4}\d{1,3}[a-z]?)\b/.exec(strippedTitle);
+  const nameTokens = strippedTitle
     .replace(/[^a-zA-Z0-9\s/#]/g, " ")
     .split(/\s+/)
     .filter((t) => t.length > 1)

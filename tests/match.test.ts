@@ -2,12 +2,19 @@ import { describe, expect, it } from "vitest";
 import { makeTestDb } from "./helpers/testDb";
 import { matchListing } from "@/lib/match";
 import { cards } from "@/db/schema";
+import { normalizeListing } from "@/lib/normalize";
 import type { Accepted } from "@/lib/normalize";
+import type { EbayItemSummary } from "@/lib/ebay/client";
 
 const acc = (over: Partial<Accepted["titleFacts"]>): Accepted => ({
   kind: "accepted", grader: "PSA", grade: "10", certNumber: null,
   priceCents: 10000, shippingCents: 0, listingType: "bin",
   titleFacts: { setHint: null, cardNumberHint: null, yearHint: null, nameTokens: [], ...over },
+});
+
+const base = (title: string, price = "100.00"): EbayItemSummary => ({
+  itemId: "v1|x|0", title, itemCreationDate: "2026-08-15T00:00:00Z",
+  price: { value: price }, buyingOptions: ["FIXED_PRICE"],
 });
 
 describe("matchListing", () => {
@@ -45,5 +52,25 @@ describe("matchListing", () => {
     const { db } = await makeTestDb();
     const r = await matchListing(db, "baseball", acc({ nameTokens: ["Griffey"] }));
     expect(r).toMatchObject({ confidence: "low", cardId: null, createdCard: false });
+  });
+
+  it("matches the real Sawsbuck soak title despite junk tokens", async () => {
+    const { db } = await makeTestDb();
+    await db.insert(cards).values([
+      { game: "pokemon", name: "Sawsbuck", setName: "Temporal Forces", cardNumber: "166", createdFrom: "catalog" },
+      { game: "pokemon", name: "Venusaur", setName: "Temporal Forces", cardNumber: "166x", createdFrom: "catalog" },
+    ]);
+    const n = normalizeListing(base("2024 POKEMON TEF EN-TEMPORAL FORCES ILLUSTRATION RARE #166 SAWSBUCK PSA 10"));
+    if (n.kind !== "accepted") throw new Error("expected accepted");
+    const r = await matchListing(db, "pokemon", n);
+    expect(r.confidence).toBe("high");
+  });
+  it("matches the real Glaceon GG40 soak title", async () => {
+    const { db } = await makeTestDb();
+    await db.insert(cards).values({ game: "pokemon", name: "Glaceon VSTAR", setName: "Crown Zenith: Galarian Gallery", cardNumber: "GG40", createdFrom: "catalog" });
+    const n = normalizeListing(base("PSA 10 Glaceon VSTAR GG40 Ultra Rare 2023 Pokemon Crown Zenith Galarian Gallery"));
+    if (n.kind !== "accepted") throw new Error("expected accepted");
+    const r = await matchListing(db, "pokemon", n);
+    expect(["high", "medium"]).toContain(r.confidence);
   });
 });

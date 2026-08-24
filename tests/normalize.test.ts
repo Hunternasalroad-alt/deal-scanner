@@ -102,4 +102,15 @@ describe("normalizeListing", () => {
     expect(n.titleFacts.yearHint).toBe(2020);
     expect(n.titleFacts.cardNumberHint).toBe("325");
   });
+
+  it("extracts lettered gallery numbers", () => {
+    const n = normalizeListing(base("PSA 10 Glaceon VSTAR GG40 Crown Zenith Galarian Gallery"));
+    if (n.kind !== "accepted") throw new Error("expected accepted");
+    expect(n.titleFacts.cardNumberHint).toBe("GG40");
+  });
+  it("prefers explicit # over lettered formats", () => {
+    const n = normalizeListing(base("2024 POKEMON TEF EN-TEMPORAL FORCES ILLUSTRATION RARE #166 SAWSBUCK PSA 10"));
+    if (n.kind !== "accepted") throw new Error("expected accepted");
+    expect(n.titleFacts.cardNumberHint).toBe("166");
+  });
 });
