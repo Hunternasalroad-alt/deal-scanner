@@ -1,9 +1,11 @@
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { CATEGORY_IDS } from "@/lib/ebay/categories";
 import { BudgetExceededError, type getItemDetail, type searchNewlyListed } from "@/lib/ebay/client";
 import { normalizeListing } from "@/lib/normalize";
 import { matchListing, type Game } from "@/lib/match";
-import { cursorState, deadLetters, listings } from "@/db/schema";
+import { recomputeReferences, scoreListing } from "@/lib/reference";
+import { sweepAgedBins, sweepEndedAuctions } from "@/lib/sweeps";
+import { cursorState, deadLetters, listings, rawPrices, referencePrices, syncState } from "@/db/schema";
 import type { Db } from "@/db/client";
 
 const OVERLAP_MS = 10 * 60_000;
@@ -18,7 +20,27 @@ export type TickReport = {
     { fetched: number; accepted: number; dropped: number; detailFetches: number; pagesFetched: number; samplingGap: boolean }
   >;
   budgetStopped: boolean;
+  // Present only once the corresponding phase actually starts (see the 35s
+  // wall-clock guard below) — each sub-key is independently optional because
+  // the guard is checked separately before each phase and a slow tick can run
+  // one sweep but not the other. Shapes derived from the sweep functions
+  // themselves rather than duplicated, so a future change to their return
+  // value can't silently drift out of sync with this type.
+  sweeps?: {
+    auctions?: Awaited<ReturnType<typeof sweepEndedAuctions>>;
+    bins?: Awaited<ReturnType<typeof sweepAgedBins>>;
+  };
+  referencesRecomputed?: number;
 };
+
+// Wall-clock (not the injectable `now`) budget for the tick's post-ingestion
+// phases: nightly recompute and both sweeps. Vercel's function cap is 60s: the
+// per-category ingestion loop above already eats a variable, unbounded share of
+// it (network calls to eBay), so these phases each re-check the remaining
+// wall-clock budget immediately before starting and skip themselves — no error,
+// no dead letter — if too little is left. Skipped work is just normal
+// backpressure, picked up again on the next tick.
+const POST_INGEST_BUDGET_MS = 35_000;
 
 // Entries list, not an object literal: unverified sports IDs are all the literal
 // "TBV" and would collapse into a single object key. Skipping them keeps ticks
@@ -36,8 +58,10 @@ export async function runScanTick(
   db: Db,
   deps: { search: typeof searchNewlyListed; detail: typeof getItemDetail; now?: () => Date },
 ): Promise<TickReport> {
+  const tickStart = Date.now();
   const now = deps.now?.() ?? new Date();
   const report: TickReport = { perCategory: {}, budgetStopped: false };
+  const withinPostIngestBudget = () => Date.now() - tickStart <= POST_INGEST_BUDGET_MS;
 
   for (const [categoryId, game] of GAMES) {
     const stats = { fetched: 0, accepted: 0, dropped: 0, detailFetches: 0, pagesFetched: 0, samplingGap: false };
@@ -100,6 +124,35 @@ export async function runScanTick(
 
           const m = await matchListing(db, game, n);
           stats.accepted++;
+
+          // Floor-rule scoring (M2 Task 5): only meaningful once the listing is
+          // tied to a real card with enough match confidence to trust the
+          // comparison. scoreListing itself is pure — all the DB access for its
+          // inputs (reference.ts's comp median, catalog raw market price) lives
+          // here, not in reference.ts.
+          let scored: ReturnType<typeof scoreListing> = null;
+          if ((m.confidence === "high" || m.confidence === "medium") && m.cardId !== null) {
+            const cardId = m.cardId;
+            const [ref] = await db
+              .select()
+              .from(referencePrices)
+              .where(
+                and(
+                  eq(referencePrices.cardId, cardId),
+                  eq(referencePrices.grader, n.grader),
+                  eq(referencePrices.grade, n.grade ?? ""),
+                ),
+              );
+            const [raw] = await db.select().from(rawPrices).where(eq(rawPrices.cardId, cardId));
+            scored = scoreListing({
+              totalCents: n.priceCents + n.shippingCents,
+              grader: n.grader,
+              grade: n.grade,
+              compMedianCents: ref?.valueCents ?? null,
+              rawMarketCents: raw?.marketCents ?? null,
+            });
+          }
+
           await db.insert(listings).values({
             ebayItemId: item.itemId, title: item.title, categoryId,
             cardId: m.cardId, matchConfidence: m.confidence,
@@ -109,6 +162,8 @@ export async function runScanTick(
             endTime: item.itemEndDate ? new Date(item.itemEndDate) : null,
             sellerFeedbackPct: item.seller?.feedbackPercentage ? Math.round(Number(item.seller.feedbackPercentage)) : null,
             sellerFeedbackCount: item.seller?.feedbackScore ?? null,
+            scoreBps: scored?.scoreBps ?? null,
+            scoreBasis: scored?.scoreBasis ?? null,
             raw: rawForStorage,
           }).onConflictDoNothing();
         }
@@ -131,5 +186,60 @@ export async function runScanTick(
       throw e;
     }
   }
+
+  // Post-ingestion phases, in brief order: nightly reference recompute, then
+  // the two comp-writing sweeps. Each phase independently re-checks both the
+  // wall-clock budget and report.budgetStopped immediately before starting —
+  // a BudgetExceededError from an earlier phase (or from the ingestion loop
+  // above) must stop every phase still to come, not just the one that hit it.
+  if (!report.budgetStopped && withinPostIngestBudget()) {
+    try {
+      const today = now.toISOString().slice(0, 10);
+      const [state] = await db.select().from(syncState).where(eq(syncState.key, "referenceRecomputeDay"));
+      const storedDay = typeof state?.value === "string" ? state.value : null;
+      // spec §9: once per UTC day, and not before 9am UTC — gives the day's
+      // comps (auction closes, BIN vanishes) time to land before the median
+      // recompute draws from them.
+      if (storedDay !== today && now.getUTCHours() >= 9) {
+        const { upserted } = await recomputeReferences(db);
+        report.referencesRecomputed = upserted;
+        await db
+          .insert(syncState)
+          .values({ key: "referenceRecomputeDay", value: today })
+          .onConflictDoUpdate({ target: syncState.key, set: { value: today } });
+      }
+    } catch (e) {
+      if (e instanceof BudgetExceededError) report.budgetStopped = true;
+      else
+        await db.insert(deadLetters).values({
+          kind: "nightly_recompute", payload: null, error: e instanceof Error ? e.message : String(e),
+        });
+    }
+  }
+
+  if (!report.budgetStopped && withinPostIngestBudget()) {
+    try {
+      report.sweeps = { ...report.sweeps, auctions: await sweepEndedAuctions(db, { detail: deps.detail }) };
+    } catch (e) {
+      if (e instanceof BudgetExceededError) report.budgetStopped = true;
+      else
+        await db.insert(deadLetters).values({
+          kind: "auction_sweep", payload: null, error: e instanceof Error ? e.message : String(e),
+        });
+    }
+  }
+
+  if (!report.budgetStopped && withinPostIngestBudget()) {
+    try {
+      report.sweeps = { ...report.sweeps, bins: await sweepAgedBins(db, { detail: deps.detail }) };
+    } catch (e) {
+      if (e instanceof BudgetExceededError) report.budgetStopped = true;
+      else
+        await db.insert(deadLetters).values({
+          kind: "bin_sweep", payload: null, error: e instanceof Error ? e.message : String(e),
+        });
+    }
+  }
+
   return report;
 }

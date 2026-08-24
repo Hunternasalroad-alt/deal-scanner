@@ -1,7 +1,8 @@
+import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { makeTestDb } from "./helpers/testDb";
 import { runScanTick } from "@/lib/scan";
-import { cards, listings, cursorState, deadLetters } from "@/db/schema";
+import { cards, comps, cursorState, deadLetters, listings, rawPrices, referencePrices } from "@/db/schema";
 import { BudgetExceededError, type EbayItemSummary } from "@/lib/ebay/client";
 
 const mk = (id: string, title: string, minsAgo: number, price = "150.00"): EbayItemSummary => ({
@@ -104,5 +105,66 @@ describe("runScanTick", () => {
     const r = await runScanTick(db, { search: search as never, detail: detail as never });
     expect(r.perCategory["183454"]).toMatchObject({ pagesFetched: 20, samplingGap: false });
     expect((await db.select().from(deadLetters)).filter((d) => d.kind === "sampling_gap")).toHaveLength(0);
+  });
+
+  it("scores an accepted high-confidence listing against the raw floor at ingest", async () => {
+    const { db } = await makeTestDb();
+    const [card] = await db.insert(cards).values({ game: "pokemon", name: "Umbreon ex", setName: "PRE", cardNumber: "161", createdFrom: "catalog" }).returning();
+    await db.insert(rawPrices).values({ cardId: card.id, marketCents: 149924, source: "pokemontcgio", asOf: new Date() });
+    const search = vi.fn(async (_db, opts) =>
+      opts.categoryId === "183454"
+        ? { total: 1, items: [mk("v1|score|0", "Umbreon ex 161/131 PSA 10", 5, "1200.00")] }
+        : { total: 0, items: [] });
+    const detail = vi.fn(async () => { throw new Error("no detail needed in this fixture"); });
+
+    const r = await runScanTick(db, { search: search as never, detail: detail as never });
+    expect(r.perCategory["183454"].accepted).toBe(1);
+
+    const [row] = await db.select().from(listings).where(eq(listings.ebayItemId, "v1|score|0"));
+    expect(row.scoreBasis).toBe("raw_floor");
+    expect(row.scoreBps).toBe(Math.round((1 - 120000 / 149924) * 10000));
+  });
+
+  it("recomputes references once per UTC day, only at/after 9am UTC", async () => {
+    const { db } = await makeTestDb();
+    const [card] = await db.insert(cards).values({ game: "pokemon", name: "Umbreon ex", setName: "PRE", cardNumber: "161", createdFrom: "catalog" }).returning();
+    const day = (n: number) => new Date(Date.now() - n * 86400_000);
+    await db.insert(comps).values([
+      { cardId: card.id, grader: "PSA", grade: "10", soldPriceCents: 100000, soldAt: day(1), source: "auction_close", ebayItemId: "rc1" },
+      { cardId: card.id, grader: "PSA", grade: "10", soldPriceCents: 110000, soldAt: day(2), source: "auction_close", ebayItemId: "rc2" },
+      { cardId: card.id, grader: "PSA", grade: "10", soldPriceCents: 120000, soldAt: day(3), source: "auction_close", ebayItemId: "rc3" },
+    ]);
+    const search = vi.fn(async () => ({ total: 0, items: [] }));
+    const detail = vi.fn(async () => { throw new Error("no detail needed in this fixture"); });
+
+    const early = new Date();
+    early.setUTCHours(8, 0, 0, 0);
+    const r1 = await runScanTick(db, { search: search as never, detail: detail as never, now: () => early });
+    expect(r1.referencesRecomputed).toBeUndefined();
+    expect(await db.select().from(referencePrices)).toHaveLength(0);
+
+    const due = new Date();
+    due.setUTCHours(9, 30, 0, 0);
+    const r2 = await runScanTick(db, { search: search as never, detail: detail as never, now: () => due });
+    expect(r2.referencesRecomputed).toBe(1);
+    expect(await db.select().from(referencePrices)).toHaveLength(1);
+
+    const r3 = await runScanTick(db, { search: search as never, detail: detail as never, now: () => due });
+    expect(r3.referencesRecomputed).toBeUndefined(); // already ran today
+  });
+
+  it("wires both sweeps into the tick after ingestion and reports their outcome", async () => {
+    const { db } = await makeTestDb();
+    await db.insert(listings).values({
+      ebayItemId: "v1|end|0", title: "t", categoryId: "183454", priceCents: 10000,
+      listingType: "auction", grader: "PSA", grade: "10",
+      endTime: new Date(Date.now() - 30 * 60000),
+    });
+    const search = vi.fn(async () => ({ total: 0, items: [] }));
+    const detail = vi.fn(async () => ({ itemId: "x", title: "t", itemCreationDate: "", buyingOptions: ["AUCTION"], bidCount: 0 }));
+
+    const r = await runScanTick(db, { search: search as never, detail: detail as never });
+    expect(r.sweeps?.auctions).toEqual({ checked: 1, compsWritten: 0 });
+    expect(r.sweeps?.bins).toEqual({ probed: 0, compsWritten: 0 });
   });
 });

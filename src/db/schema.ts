@@ -61,6 +61,11 @@ export const listings = pgTable("listings", {
   // endpoint; null means never probed. Nullable, no default — most listings (all
   // auctions, and BINs not yet reached by that sweep) never get a value.
   lastProbedAt: timestamp("last_probed_at", { withTimezone: true }),
+  // Floor-rule score (M2 Task 5), written once at ingest for high/medium-confidence
+  // matched listings only — see reference.ts's scoreListing. Nullable: most listings
+  // (low confidence, unmatched, or no usable reference basis) never get a value.
+  scoreBps: integer("score_bps"),
+  scoreBasis: text("score_basis", { enum: ["comp_median", "raw_floor"] }),
   raw: jsonb("raw").$type<unknown>(),
 });
 
@@ -78,6 +83,31 @@ export const comps = pgTable(
   },
   (t) => [uniqueIndex("comps_item").on(t.ebayItemId)],
 );
+
+export const referencePrices = pgTable(
+  "reference_prices",
+  {
+    cardId: integer("card_id").notNull().references(() => cards.id),
+    grader: text("grader", { enum: ["PSA", "BGS", "SGC"] }).notNull(),
+    // Same NOT-NULL-DEFAULT-'' reasoning as comps.grade: this column sits in the
+    // primary key, and Postgres treats NULLs as distinct — nullable here would
+    // break upsert idempotency for listings graded without a specific number.
+    grade: text("grade").notNull().default(""),
+    valueCents: integer("value_cents").notNull(),
+    basis: text("basis", { enum: ["comp_median"] }).notNull(),
+    compCount30d: integer("comp_count_30d").notNull(),
+    asOf: timestamp("as_of", { withTimezone: true }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.cardId, t.grader, t.grade] })],
+);
+
+// Small durable key/value table for cross-tick scan state that isn't per-category
+// (cursorState) or per-budget-day (apiBudget). First user: the nightly reference
+// recompute gate's "have we already run today" marker (M2 Task 5).
+export const syncState = pgTable("sync_state", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").$type<unknown>(),
+});
 
 export const cursorState = pgTable("cursor_state", {
   categoryId: text("category_id").primaryKey(),
