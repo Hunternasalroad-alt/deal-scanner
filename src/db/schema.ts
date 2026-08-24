@@ -57,8 +57,27 @@ export const listings = pgTable("listings", {
   dropReason: text("drop_reason"),
   firstSeen: timestamp("first_seen", { withTimezone: true }).notNull().defaultNow(),
   lastSeen: timestamp("last_seen", { withTimezone: true }).notNull().defaultNow(),
+  // Last time the BIN-disappearance sweep (M2 Task 4) probed this listing's detail
+  // endpoint; null means never probed. Nullable, no default — most listings (all
+  // auctions, and BINs not yet reached by that sweep) never get a value.
+  lastProbedAt: timestamp("last_probed_at", { withTimezone: true }),
   raw: jsonb("raw").$type<unknown>(),
 });
+
+export const comps = pgTable(
+  "comps",
+  {
+    id: serial("id").primaryKey(),
+    cardId: integer("card_id").references(() => cards.id),
+    grader: text("grader", { enum: ["PSA", "BGS", "SGC"] }).notNull(),
+    grade: text("grade").notNull().default(""),
+    soldPriceCents: integer("sold_price_cents").notNull(),
+    soldAt: timestamp("sold_at", { withTimezone: true }).notNull(),
+    source: text("source", { enum: ["auction_close", "bin_disappeared", "manual"] }).notNull(),
+    ebayItemId: text("ebay_item_id").notNull(),
+  },
+  (t) => [uniqueIndex("comps_item").on(t.ebayItemId)],
+);
 
 export const cursorState = pgTable("cursor_state", {
   categoryId: text("category_id").primaryKey(),

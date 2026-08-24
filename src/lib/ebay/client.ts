@@ -5,6 +5,15 @@ import { env } from "@/lib/config";
 
 export class BudgetExceededError extends Error {}
 
+// Typed alternative to the plain Error thrown on non-retryable HTTP failures,
+// so callers (e.g. the ended-auction sweep) can branch on status without
+// parsing the message string.
+export class EbayHttpError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
 export type EbayItemSummary = {
   itemId: string; title: string; itemCreationDate: string;
   price?: { value: string };
@@ -14,7 +23,11 @@ export type EbayItemSummary = {
   categories?: { categoryId: string }[];
 };
 export type EbaySearchPage = { items: EbayItemSummary[]; total: number };
-export type EbayItemDetail = EbayItemSummary & { localizedAspects?: { name: string; value: string }[] };
+export type EbayItemDetail = EbayItemSummary & {
+  localizedAspects?: { name: string; value: string }[];
+  currentBidPrice?: { value: string };
+  bidCount?: number;
+};
 
 const TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token";
 const BROWSE = "https://api.ebay.com/buy/browse/v1";
@@ -67,7 +80,7 @@ async function browseGet(db: Db, kind: "search" | "detail", url: string, fetchIm
       await new Promise((r) => setTimeout(r, 1500));
       continue;
     }
-    throw new Error(`ebay ${kind} ${res.status}: ${await res.text()}`);
+    throw new EbayHttpError(res.status, `ebay ${kind} ${res.status}: ${await res.text()}`);
   }
 }
 
