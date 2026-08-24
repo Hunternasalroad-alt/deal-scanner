@@ -461,6 +461,7 @@ describe("scoreListing", () => {
 ## Spec deviations (deliberate)
 - Nightly reference recompute rides inside the first post-09:00-UTC tick (spec §4 "nightly" language) rather than a separate scheduler — one moving part, same 35s guard as the sweeps.
 - Automated raw-price re-sync deferred per spec §14.6.
+- Spec §5's 90-day/half-weight comp fallback is deferred to M3 (flagged by Task 5's review as an unlisted gap; ruling recorded here): comps begin existing only at M2 deploy, so no card can have >30d of comp history until ~late November — the fallback is valueless this quarter. M3 implements it when the data it needs exists.
 
 ## M2 exit criteria
 All suites green; prod tick reports paging depth and sweep activity; `sampling_gap` dead-letters visible when they occur (rather than silent loss); comps accumulate from both sources; references appear once any (card, grader, grade) reaches 3 comps in 30d; matched listings carry scores in the feed; budget stays under 4,800/day at observed cadence.
