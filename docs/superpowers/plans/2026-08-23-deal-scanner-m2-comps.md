@@ -62,13 +62,27 @@ it("flags a sampling gap at the hard page cap and still advances the cursor", as
 });
 ```
 
+```ts
+it("a short 20th page is clean exhaustion, not a gap", async () => {
+  const { db } = await makeTestDb();
+  const search = vi.fn(async (_db, opts) =>
+    opts.categoryId === "183454"
+      ? { total: 3950, items: mkPage(opts.offset / 200, opts.offset / 200 < 19 ? 200 : 150) }
+      : { total: 0, items: [] });
+  const detail = vi.fn(async () => { throw new Error("skip detail"); });
+  const r = await runScanTick(db, { search: search as never, detail: detail as never });
+  expect(r.perCategory["183454"]).toMatchObject({ pagesFetched: 20, samplingGap: false });
+  expect((await db.select().from(deadLetters)).filter((d) => d.kind === "sampling_gap")).toHaveLength(0);
+});
+```
+
 (Import `deadLetters` in the test file. The existing three tests must pass unchanged — the first test's two-item fixture is a single short page, so `pagesFetched: 1, samplingGap: false`.)
 
 - [ ] **Step 2: Run to verify failure** — `pnpm vitest run tests/scan.test.ts` → new tests FAIL (`pagesFetched` undefined).
 - [ ] **Step 3: Implement** in `src/lib/scan.ts`:
   - Replace `const MAX_PAGES = 3;` with `const MAX_PAGES_HARD = 20; // spec §14.1: page to the cursor; cap bounds a pathological gap`.
   - Stats shape: `{ fetched: 0, accepted: 0, dropped: 0, detailFetches: 0, pagesFetched: 0, samplingGap: false }` (update the `TickReport` type accordingly).
-  - Loop: `for (let page = 0; page < MAX_PAGES_HARD; page++) { ... stats.pagesFetched++; ...existing body...; if (items.length < 200) break; }` and after the loop: `if (stats.pagesFetched === MAX_PAGES_HARD) { stats.samplingGap = true; await db.insert(deadLetters).values({ kind: "sampling_gap", payload: { categoryId, since: since.toISOString(), newestSeen: newestSeen.toISOString() }, error: \`page cap ${MAX_PAGES_HARD} hit before exhausting results\` }); }` — wait: a run that ends EXACTLY on a full 20th page is indistinguishable from overflow; that is the intended conservative behavior (flag it).
+  - Loop tracks WHY it exited, not just how far it got: declare `let exhausted = false;` before the loop; BOTH break sites set it (`if (items.length === 0) { exhausted = true; break; }` for the empty page, and `if (items.length < 200) { exhausted = true; break; }` for the short page); `stats.pagesFetched++` per iteration as before. After the loop: `if (!exhausted) { stats.samplingGap = true; await db.insert(deadLetters).values({ kind: "sampling_gap", payload: { categoryId, since: since.toISOString(), newestSeen: newestSeen.toISOString() }, error: \`page cap ${MAX_PAGES_HARD} hit before exhausting results\` }); }`. A short or empty page ANYWHERE — including as the 20th fetch — means the cursor was reached: no flag, no dead letter. Only exiting via the `for` condition (20 consecutive full pages) flags; the single genuinely undecidable case (backlog of exactly 4,000) stays conservatively flagged, per spec §14.1's "before reaching the cursor."
   - Cursor upsert stays exactly where it is (after the loop, before the catch) so it advances in both outcomes.
 - [ ] **Step 4: Run tests** — `pnpm vitest run tests/scan.test.ts` (5 tests) then full `pnpm test`, `pnpm lint`, `pnpm build`. Green, pristine.
 - [ ] **Step 5: Commit** — `feat: lossless cursor pagination with observable sampling gaps`
