@@ -153,6 +153,25 @@ it("matches the real Glaceon GG40 soak title", async () => {
 ```
 
   (`tests/match.test.ts` gains an import of `normalizeListing` and the local `base` helper copied from `tests/normalize.test.ts` — copy it; tasks may be read out of order.)
+
+  **Revert-resistance test (review-mandated — the one committed test that fails if whole-token nameHits is reverted to substring matching).** Both cards share the card number, forcing `nameHits` to disambiguate; the junk token "EN" substring-matches "V**en**usaur" under old code (→ ambiguous → LOW) but is filtered by `usableTokens` under new code (→ unique → HIGH):
+
+```ts
+it("disambiguates via whole-token nameHits when a decoy name contains a junk token as a substring", async () => {
+  const { db } = await makeTestDb();
+  await db.insert(cards).values([
+    { game: "pokemon", name: "Sawsbuck", setName: "Temporal Forces", cardNumber: "50", createdFrom: "catalog" },
+    { game: "pokemon", name: "Venusaur", setName: "Temporal Forces", cardNumber: "50", createdFrom: "catalog" },
+  ]);
+  const n = normalizeListing(base("2024 POKEMON TEF EN-TEMPORAL FORCES RARE #50 SAWSBUCK PSA 10"));
+  if (n.kind !== "accepted") throw new Error("expected accepted");
+  const r = await matchListing(db, "pokemon", n);
+  expect(r.confidence).toBe("high");
+  expect(r.cardId).not.toBeNull();
+});
+```
+
+  Also (review-mandated, same hunk): hoist the loop-invariant `const usable = usableTokens(nameTokens);` above the `byNumber.filter(...)` and use it inside the callback — `usableTokens` must not be recomputed per candidate.
 - [ ] **Step 2: RED** — both files fail.
 - [ ] **Step 3: Implement** per the Interfaces block. All existing rows in both test files must stay green (the 15 normalize rows and 6 match tests are the regression contract).
 - [ ] **Step 4: Full verify** — `pnpm test`, `pnpm lint`, `pnpm build`.
