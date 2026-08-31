@@ -55,8 +55,6 @@ export async function recomputeReferences(db: Db): Promise<{ upserted: number }>
   return { upserted };
 }
 
-export const GRADE_FLOOR_MULTIPLIER: Record<string, number> = { "10": 1.0, "9.5": 0.8, "9": 0.8 };
-
 // spec §15: peer-ask floor. A listing's peers are the OTHER active Buy-It-Now
 // listings sharing (cardId, grader, grade) at high/medium match confidence.
 // The floor is the minimum peer ask including shipping, and exists only with

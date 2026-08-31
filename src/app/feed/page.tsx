@@ -1,30 +1,29 @@
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
-import { cards, comps, listings, rawPrices, referencePrices } from "@/db/schema";
-import { GRADE_FLOOR_MULTIPLIER } from "@/lib/reference";
+import { cards, comps, listings, referencePrices } from "@/db/schema";
+import { collectPeerAsks, peerFloorCents, peerKey } from "@/lib/reference";
 import { saleMetrics, type CompPoint, type SaleMetrics } from "@/lib/valuation";
 
 export const dynamic = "force-dynamic";
 
 export default async function FeedPage() {
   const itemUrl = (id: string) => `https://www.ebay.com/itm/${id.split("|")[1] ?? id}`;
-  const displayValue = (r: { refValueCents: number | null; rawMarketCents: number | null; grade: string | null }) => {
+  const displayValue = (r: { id: string; cardId: number | null; grader: string | null; grade: string | null; refValueCents: number | null }) => {
     if (r.refValueCents != null && r.refValueCents > 0) return { cents: r.refValueCents, basis: "comps" };
-    const mult = r.grade != null ? GRADE_FLOOR_MULTIPLIER[r.grade] : undefined;
-    if (mult != null && r.rawMarketCents != null && r.rawMarketCents > 0)
-      return { cents: Math.round(r.rawMarketCents * mult), basis: "raw floor" };
+    if (r.cardId == null || r.grader == null) return null;
+    const floor = peerFloorCents(peerAsks.get(peerKey(r.cardId, r.grader, r.grade)), r.id);
+    if (floor != null) return { cents: floor, basis: "peers" };
     return null;
   };
   const db = getDb();
   const rows = await db
-    .select({ id: listings.ebayItemId, title: listings.title, grader: listings.grader, grade: listings.grade, price: listings.priceCents, conf: listings.matchConfidence, cardId: listings.cardId, card: cards.name, scoreBps: listings.scoreBps, scoreBasis: listings.scoreBasis, refValueCents: referencePrices.valueCents, rawMarketCents: rawPrices.marketCents })
+    .select({ id: listings.ebayItemId, title: listings.title, grader: listings.grader, grade: listings.grade, price: listings.priceCents, conf: listings.matchConfidence, cardId: listings.cardId, card: cards.name, scoreBps: listings.scoreBps, scoreBasis: listings.scoreBasis, refValueCents: referencePrices.valueCents })
     .from(listings).leftJoin(cards, eq(listings.cardId, cards.id))
     .leftJoin(referencePrices, and(
       eq(referencePrices.cardId, listings.cardId),
       eq(referencePrices.grader, listings.grader),
       eq(referencePrices.grade, listings.grade),
     ))
-    .leftJoin(rawPrices, eq(rawPrices.cardId, listings.cardId))
     .where(and(isNull(listings.dropReason), eq(listings.status, "active"))).orderBy(sql`${listings.scoreBps} desc nulls last`, desc(listings.firstSeen)).limit(100);
 
   // Observed-sale metrics (from comps — real closes/disappearances), separate from
@@ -33,6 +32,7 @@ export default async function FeedPage() {
   // shape as reference.ts's recomputeReferences — so saleMetrics runs once per
   // group rather than once per row.
   const cardIds = [...new Set(rows.map((r) => r.cardId).filter((id): id is number => id != null))];
+  const peerAsks = await collectPeerAsks(db, cardIds);
   const compRows = cardIds.length > 0
     ? await db
         .select({ cardId: comps.cardId, grader: comps.grader, grade: comps.grade, soldPriceCents: comps.soldPriceCents, soldAt: comps.soldAt })
@@ -70,7 +70,7 @@ export default async function FeedPage() {
                 <td>{r.conf}</td>
                 <td align="right">
                   {r.scoreBps != null
-                    ? `${(r.scoreBps / 100).toFixed(2)}% (${r.scoreBasis === "comp_median" ? "comps" : "raw floor"})`
+                    ? `${(r.scoreBps / 100).toFixed(2)}% (${r.scoreBasis === "comp_median" ? "comps" : r.scoreBasis === "peer_floor" ? "vs peers" : "raw floor"})`
                     : "—"}
                 </td>
               </tr>
