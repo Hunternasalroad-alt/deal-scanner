@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNotNull } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import { comps, listings, referencePrices } from "@/db/schema";
 import type { Db } from "@/db/client";
 
@@ -115,4 +115,63 @@ export function scoreListing(input: {
   if (floor != null && floor > 0)
     return { scoreBps: Math.round((1 - totalCents / floor) * 10000), scoreBasis: "peer_floor" };
   return null;
+}
+
+// spec §15.3: nightly re-score. Peer floors move as copies appear and sell,
+// so scores written at ingest go stale — recompute every active, matched,
+// graded listing against CURRENT comp references and peer floors, clearing
+// scores whose basis has evaporated. Processes highest-current-score first so
+// stale top-of-feed rows flush earliest if the guard stops us short; only
+// changed rows are written (steady-state nights are nearly free). One update
+// round trip per changed row is the Neon-HTTP-driver norm (no transactions).
+export async function rescoreActiveListings(
+  db: Db,
+  opts?: { shouldContinue?: () => boolean },
+): Promise<{ rescored: number; exhausted: boolean }> {
+  const shouldContinue = opts?.shouldContinue ?? (() => true);
+  // Checked before the query too, not only per-row below: an already-exhausted
+  // budget shouldn't pay for the SELECT, and with zero active matched listings
+  // the loop below never runs at all, so this is the only place that check
+  // could ever fire.
+  if (!shouldContinue()) return { rescored: 0, exhausted: false };
+
+  const rows = await db
+    .select({
+      id: listings.ebayItemId, cardId: listings.cardId, grader: listings.grader, grade: listings.grade,
+      priceCents: listings.priceCents, shippingCents: listings.shippingCents,
+      scoreBps: listings.scoreBps, scoreBasis: listings.scoreBasis,
+    })
+    .from(listings)
+    .where(and(
+      eq(listings.status, "active"),
+      isNotNull(listings.cardId),
+      isNotNull(listings.grader),
+      inArray(listings.matchConfidence, ["high", "medium"]),
+    ))
+    .orderBy(sql`${listings.scoreBps} desc nulls last`);
+
+  const cardIds = [...new Set(rows.map((r) => r.cardId).filter((id): id is number => id !== null))];
+  const peerMap = await collectPeerAsks(db, cardIds);
+  const refs = cardIds.length > 0
+    ? await db.select().from(referencePrices).where(inArray(referencePrices.cardId, cardIds))
+    : [];
+  const refByKey = new Map(refs.map((r) => [`${r.cardId}|${r.grader}|${r.grade}`, r.valueCents]));
+
+  let rescored = 0;
+  for (const r of rows) {
+    if (!shouldContinue()) return { rescored, exhausted: false };
+    if (r.cardId === null || r.grader === null) continue; // narrows for TS; the query already filters
+    const key = peerKey(r.cardId, r.grader, r.grade);
+    const scored = scoreListing({
+      totalCents: r.priceCents + r.shippingCents,
+      compMedianCents: refByKey.get(key) ?? null,
+      peerFloorCents: peerFloorCents(peerMap.get(key), r.id),
+    });
+    const nextBps = scored?.scoreBps ?? null;
+    const nextBasis = scored?.scoreBasis ?? null;
+    if (nextBps === r.scoreBps && nextBasis === r.scoreBasis) continue;
+    await db.update(listings).set({ scoreBps: nextBps, scoreBasis: nextBasis }).where(eq(listings.ebayItemId, r.id));
+    rescored++;
+  }
+  return { rescored, exhausted: true };
 }

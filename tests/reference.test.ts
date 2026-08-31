@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { makeTestDb } from "./helpers/testDb";
-import { collectPeerAsks, peerFloorCents, peerKey, recomputeReferences, scoreListing } from "@/lib/reference";
+import { collectPeerAsks, peerFloorCents, peerKey, recomputeReferences, rescoreActiveListings, scoreListing } from "@/lib/reference";
 import { cards, comps, listings, referencePrices } from "@/db/schema";
 
 describe("recomputeReferences", () => {
@@ -68,4 +69,48 @@ it("collectPeerAsks returns only active high/medium BIN asks grouped by card|gra
   const asks = map.get(peerKey(card.id, "PSA", "10"))!;
   expect(asks.map((a) => a.ebayItemId).sort()).toEqual(["bin-hi", "bin-med"]);
   expect(asks.find((a) => a.ebayItemId === "bin-hi")!.totalCents).toBe(100500); // price + shipping
+});
+
+it("rescoreActiveListings clears stale scores, applies peer floors, prefers comps, and skips unchanged rows", async () => {
+  const { db } = await makeTestDb();
+  const [card] = await db.insert(cards).values({ game: "pokemon", name: "Pikachu V", setName: "S4", cardNumber: "104", createdFrom: "catalog" }).returning();
+  const base = { cardId: card.id, categoryId: "183454", grader: "PSA" as const, grade: "10", shippingCents: 0, listingType: "bin" as const, matchConfidence: "high" as const, status: "active" as const };
+
+  // (a) legacy raw_floor score with no basis left → must be cleared
+  await db.insert(listings).values({ ...base, ebayItemId: "stale", title: "stale", priceCents: 50000, scoreBps: 7781, scoreBasis: "raw_floor" });
+  const first = await rescoreActiveListings(db);
+  expect(first).toEqual({ rescored: 1, exhausted: true });
+  const [cleared] = await db.select().from(listings).where(eq(listings.ebayItemId, "stale"));
+  expect(cleared.scoreBps).toBeNull();
+  expect(cleared.scoreBasis).toBeNull();
+
+  // (b) two peers appear → "stale" gains a peer_floor score on the next pass
+  await db.insert(listings).values([
+    { ...base, ebayItemId: "p1", title: "p1", priceCents: 100000 },
+    { ...base, ebayItemId: "p2", title: "p2", priceCents: 110000 },
+  ]);
+  const second = await rescoreActiveListings(db);
+  expect(second.exhausted).toBe(true);
+  const [scored] = await db.select().from(listings).where(eq(listings.ebayItemId, "stale"));
+  expect(scored.scoreBasis).toBe("peer_floor");
+  expect(scored.scoreBps).toBe(5000); // 1 - 50000/100000
+
+  // (c) running again with nothing changed writes nothing
+  expect((await rescoreActiveListings(db)).rescored).toBe(0);
+
+  // (d) a comp-median reference outranks the peer floor
+  const soldAt = new Date();
+  await db.insert(comps).values([1, 2, 3].map((i) => ({
+    cardId: card.id, grader: "PSA" as const, grade: "10", soldPriceCents: 200000, soldAt, source: "manual" as const, ebayItemId: `c${i}`,
+  })));
+  await recomputeReferences(db);
+  await rescoreActiveListings(db);
+  const [comped] = await db.select().from(listings).where(eq(listings.ebayItemId, "stale"));
+  expect(comped.scoreBasis).toBe("comp_median");
+  expect(comped.scoreBps).toBe(7500); // 1 - 50000/200000
+});
+
+it("rescoreActiveListings honors the time guard", async () => {
+  const { db } = await makeTestDb();
+  expect(await rescoreActiveListings(db, { shouldContinue: () => false })).toEqual({ rescored: 0, exhausted: false });
 });

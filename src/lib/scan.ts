@@ -3,7 +3,7 @@ import { CATEGORY_IDS } from "@/lib/ebay/categories";
 import { BudgetExceededError, getTodaySpend, type getItemDetail, type searchNewlyListed } from "@/lib/ebay/client";
 import { normalizeListing } from "@/lib/normalize";
 import { matchListing, type Game } from "@/lib/match";
-import { collectPeerAsks, peerFloorCents, peerKey, recomputeReferences, scoreListing } from "@/lib/reference";
+import { collectPeerAsks, peerFloorCents, peerKey, recomputeReferences, rescoreActiveListings, scoreListing } from "@/lib/reference";
 import { sweepAgedBins, sweepEndedAuctions } from "@/lib/sweeps";
 import { cursorState, deadLetters, listings, referencePrices, syncState } from "@/db/schema";
 import type { Db } from "@/db/client";
@@ -32,6 +32,8 @@ export type TickReport = {
     bins?: Awaited<ReturnType<typeof sweepAgedBins>>;
   };
   referencesRecomputed?: number;
+  // spec §15.3: rows re-scored by the nightly pass (present only when the nightly gate ran)
+  rescored?: number;
 };
 
 // Derived timing budget (final review): the route's maxDuration is 120s (kept in
@@ -211,6 +213,8 @@ export async function runScanTick(
       if (storedDay !== today && now.getUTCHours() >= 9) {
         const { upserted } = await recomputeReferences(db);
         report.referencesRecomputed = upserted;
+        const { rescored } = await rescoreActiveListings(db, { shouldContinue: withinPostIngestBudget });
+        report.rescored = rescored;
         await db
           .insert(syncState)
           .values({ key: "referenceRecomputeDay", value: today })

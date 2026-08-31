@@ -156,6 +156,13 @@ describe("runScanTick", () => {
       { cardId: card.id, grader: "PSA", grade: "10", soldPriceCents: 110000, soldAt: day(2), source: "auction_close", ebayItemId: "rc2" },
       { cardId: card.id, grader: "PSA", grade: "10", soldPriceCents: 120000, soldAt: day(3), source: "auction_close", ebayItemId: "rc3" },
     ]);
+    // Stale score written by a prior ingest (M2's raw_floor basis, since retired) —
+    // the nightly rescore pass must pick this up once the comp median lands.
+    await db.insert(listings).values({
+      ebayItemId: "stale-nightly", title: "t", categoryId: "183454", cardId: card.id,
+      grader: "PSA", grade: "10", priceCents: 50000, shippingCents: 0, listingType: "bin",
+      matchConfidence: "high", status: "active", scoreBps: 1234, scoreBasis: "raw_floor",
+    });
     const search = vi.fn(async () => ({ total: 0, items: [] }));
     const detail = vi.fn(async () => { throw new Error("no detail needed in this fixture"); });
 
@@ -170,6 +177,7 @@ describe("runScanTick", () => {
     const r2 = await runScanTick(db, { search: search as never, detail: detail as never, now: () => due });
     expect(r2.referencesRecomputed).toBe(1);
     expect(await db.select().from(referencePrices)).toHaveLength(1);
+    expect(r2.rescored).toBeGreaterThanOrEqual(1);
 
     const r3 = await runScanTick(db, { search: search as never, detail: detail as never, now: () => due });
     expect(r3.referencesRecomputed).toBeUndefined(); // already ran today
