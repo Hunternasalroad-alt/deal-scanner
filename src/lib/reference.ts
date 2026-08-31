@@ -1,5 +1,5 @@
-import { and, gte, isNotNull } from "drizzle-orm";
-import { comps, referencePrices } from "@/db/schema";
+import { and, eq, gte, inArray, isNotNull } from "drizzle-orm";
+import { comps, listings, referencePrices } from "@/db/schema";
 import type { Db } from "@/db/client";
 
 const TRAILING_WINDOW_MS = 30 * 86400_000;
@@ -57,30 +57,62 @@ export async function recomputeReferences(db: Db): Promise<{ upserted: number }>
 
 export const GRADE_FLOOR_MULTIPLIER: Record<string, number> = { "10": 1.0, "9.5": 0.8, "9": 0.8 };
 
-// spec §9 floor rule. comp-median is the trusted reference when present: score
-// = 1 - total/median, so a listing priced under the trailing comp median scores
-// positive. Without a comp median, fall back to a fraction of raw market price
-// (pokemontcg.io's near-mint raw price) — but only for grades we've calibrated a
-// multiplier for; other grades have no floor to compare against and score null
-// rather than guess. scoreBps is basis points (score * 10000) so callers never
-// handle floating point directly; negative values are valid and mean the
-// listing is priced above the reference (overpriced), not an error.
+// spec §15: peer-ask floor. A listing's peers are the OTHER active Buy-It-Now
+// listings sharing (cardId, grader, grade) at high/medium match confidence.
+// The floor is the minimum peer ask including shipping, and exists only with
+// ≥2 peers — one lone ask never defines a market. Auctions are never peers
+// (a mid-auction bid is not an ask).
+export type PeerAsk = { ebayItemId: string; totalCents: number };
+
+export const peerKey = (cardId: number, grader: string, grade: string | null) =>
+  `${cardId}|${grader}|${grade ?? ""}`;
+
+export async function collectPeerAsks(db: Db, cardIds: number[]): Promise<Map<string, PeerAsk[]>> {
+  if (cardIds.length === 0) return new Map();
+  const rows = await db
+    .select({
+      id: listings.ebayItemId, cardId: listings.cardId, grader: listings.grader,
+      grade: listings.grade, priceCents: listings.priceCents, shippingCents: listings.shippingCents,
+    })
+    .from(listings)
+    .where(and(
+      eq(listings.status, "active"),
+      eq(listings.listingType, "bin"),
+      inArray(listings.matchConfidence, ["high", "medium"]),
+      inArray(listings.cardId, cardIds),
+      isNotNull(listings.grader),
+    ));
+  const map = new Map<string, PeerAsk[]>();
+  for (const r of rows) {
+    if (r.cardId === null || r.grader === null) continue; // narrows for TS; the query already filters
+    const key = peerKey(r.cardId, r.grader, r.grade);
+    const ask = { ebayItemId: r.id, totalCents: r.priceCents + r.shippingCents };
+    const asks = map.get(key);
+    if (asks) asks.push(ask); else map.set(key, [ask]);
+  }
+  return map;
+}
+
+const MIN_PEERS = 2;
+
+export function peerFloorCents(asks: PeerAsk[] | undefined, selfId: string): number | null {
+  const peers = (asks ?? []).filter((a) => a.ebayItemId !== selfId);
+  if (peers.length < MIN_PEERS) return null;
+  return Math.min(...peers.map((a) => a.totalCents));
+}
+
+// spec §15 hierarchy: comp median (real observed sales) when present, else the
+// live peer-ask floor, else unscored. scoreBps is basis points (score * 10000);
+// negative values mean priced above the reference — valid, not an error.
 export function scoreListing(input: {
   totalCents: number;
-  grader: "PSA" | "BGS" | "SGC";
-  grade: string | null;
   compMedianCents?: number | null;
-  rawMarketCents?: number | null;
-}): { scoreBps: number; scoreBasis: "comp_median" | "raw_floor" } | null {
-  const { totalCents, grade, compMedianCents, rawMarketCents } = input;
-
+  peerFloorCents?: number | null;
+}): { scoreBps: number; scoreBasis: "comp_median" | "peer_floor" } | null {
+  const { totalCents, compMedianCents, peerFloorCents: floor } = input;
   if (compMedianCents != null && compMedianCents > 0)
     return { scoreBps: Math.round((1 - totalCents / compMedianCents) * 10000), scoreBasis: "comp_median" };
-
-  if (grade !== null && grade in GRADE_FLOOR_MULTIPLIER && rawMarketCents != null) {
-    const ref = rawMarketCents * GRADE_FLOOR_MULTIPLIER[grade];
-    if (ref > 0) return { scoreBps: Math.round((1 - totalCents / ref) * 10000), scoreBasis: "raw_floor" };
-  }
-
+  if (floor != null && floor > 0)
+    return { scoreBps: Math.round((1 - totalCents / floor) * 10000), scoreBasis: "peer_floor" };
   return null;
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { makeTestDb } from "./helpers/testDb";
-import { recomputeReferences, scoreListing } from "@/lib/reference";
-import { cards, comps, referencePrices } from "@/db/schema";
+import { collectPeerAsks, peerFloorCents, peerKey, recomputeReferences, scoreListing } from "@/lib/reference";
+import { cards, comps, listings, referencePrices } from "@/db/schema";
 
 describe("recomputeReferences", () => {
   it("medians 3+ comps in 30d and skips thin or stale groups", async () => {
@@ -23,24 +23,49 @@ describe("recomputeReferences", () => {
 });
 
 describe("scoreListing", () => {
-  const base = { grader: "PSA" as const, grade: "10" };
-  it("prefers comp median", () =>
-    expect(scoreListing({ ...base, totalCents: 400000, compMedianCents: 520000, rawMarketCents: 150000 }))
+  it("prefers comp median over peer floor", () =>
+    expect(scoreListing({ totalCents: 400000, compMedianCents: 520000, peerFloorCents: 150000 }))
       .toEqual({ scoreBps: 2308, scoreBasis: "comp_median" }));
-  it("falls back to the raw floor for a 10", () =>
-    expect(scoreListing({ ...base, totalCents: 120000, rawMarketCents: 149924 }))
-      .toEqual({ scoreBps: 1996, scoreBasis: "raw_floor" }));
-  it("applies the 0.8 multiplier for a 9", () =>
-    expect(scoreListing({ ...base, grade: "9", totalCents: 100000, rawMarketCents: 149924 }))
-      .toEqual({ scoreBps: 1662, scoreBasis: "raw_floor" }));
+
+  it("falls back to peer floor when no comp median", () =>
+    expect(scoreListing({ totalCents: 120000, peerFloorCents: 149924 }))
+      .toEqual({ scoreBps: 1996, scoreBasis: "peer_floor" }));
+
+  it("scores negative when priced above the peer floor", () =>
+    expect(scoreListing({ totalCents: 180000, peerFloorCents: 149924 }))
+      .toEqual({ scoreBps: -2006, scoreBasis: "peer_floor" }));
+
   it("returns null with no usable basis", () => {
-    expect(scoreListing({ ...base, grade: "8", totalCents: 1000, rawMarketCents: 5000 })).toBeNull();
-    expect(scoreListing({ ...base, totalCents: 1000 })).toBeNull();
+    expect(scoreListing({ totalCents: 1000 })).toBeNull();
+    expect(scoreListing({ totalCents: 1000, compMedianCents: 0, peerFloorCents: 0 })).toBeNull();
+    expect(scoreListing({ totalCents: 1000, peerFloorCents: null })).toBeNull();
   });
-  it("goes negative for overpriced listings", () =>
-    expect(scoreListing({ ...base, totalCents: 600000, compMedianCents: 520000 })!.scoreBps).toBeLessThan(0));
-  it("returns null rather than dividing by a zero reference", () => {
-    expect(scoreListing({ ...base, totalCents: 1000, compMedianCents: 0, rawMarketCents: 0 })).toBeNull();
-    expect(scoreListing({ ...base, totalCents: 1000, rawMarketCents: 0 })).toBeNull();
-  });
+});
+
+it("peerFloorCents excludes self and requires 2 peers", () => {
+  const asks = [
+    { ebayItemId: "self", totalCents: 5000 },
+    { ebayItemId: "a", totalCents: 10000 },
+    { ebayItemId: "b", totalCents: 12000 },
+  ];
+  expect(peerFloorCents(asks, "self")).toBe(10000);
+  expect(peerFloorCents([asks[0], asks[1]], "self")).toBeNull(); // 1 peer after self-exclusion
+  expect(peerFloorCents(undefined, "self")).toBeNull();
+});
+
+it("collectPeerAsks returns only active high/medium BIN asks grouped by card|grader|grade", async () => {
+  const { db } = await makeTestDb();
+  const [card] = await db.insert(cards).values({ game: "pokemon", name: "Umbreon ex", setName: "S", cardNumber: "161", createdFrom: "catalog" }).returning();
+  const base = { cardId: card.id, categoryId: "183454", title: "t", grader: "PSA" as const, grade: "10", priceCents: 100000, shippingCents: 500 };
+  await db.insert(listings).values([
+    { ...base, ebayItemId: "bin-hi", listingType: "bin", matchConfidence: "high", status: "active" },
+    { ...base, ebayItemId: "bin-med", listingType: "bin", matchConfidence: "medium", status: "active", priceCents: 120000, shippingCents: 0 },
+    { ...base, ebayItemId: "auction", listingType: "auction", matchConfidence: "high", status: "active" },       // excluded: auction
+    { ...base, ebayItemId: "bin-low", listingType: "bin", matchConfidence: "low", status: "active" },            // excluded: low confidence
+    { ...base, ebayItemId: "bin-ended", listingType: "bin", matchConfidence: "high", status: "ended" },          // excluded: not active
+  ]);
+  const map = await collectPeerAsks(db, [card.id]);
+  const asks = map.get(peerKey(card.id, "PSA", "10"))!;
+  expect(asks.map((a) => a.ebayItemId).sort()).toEqual(["bin-hi", "bin-med"]);
+  expect(asks.find((a) => a.ebayItemId === "bin-hi")!.totalCents).toBe(100500); // price + shipping
 });

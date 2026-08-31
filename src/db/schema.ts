@@ -65,7 +65,9 @@ export const listings = pgTable("listings", {
   // matched listings only — see reference.ts's scoreListing. Nullable: most listings
   // (low confidence, unmatched, or no usable reference basis) never get a value.
   scoreBps: integer("score_bps"),
-  scoreBasis: text("score_basis", { enum: ["comp_median", "raw_floor"] }),
+  // "raw_floor" is legacy (M2, retired by spec §15): never written after M2.5,
+  // still readable on rows the nightly re-score hasn't reached yet.
+  scoreBasis: text("score_basis", { enum: ["comp_median", "peer_floor", "raw_floor"] }),
   raw: jsonb("raw").$type<unknown>(),
 });
 

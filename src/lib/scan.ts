@@ -3,9 +3,9 @@ import { CATEGORY_IDS } from "@/lib/ebay/categories";
 import { BudgetExceededError, getTodaySpend, type getItemDetail, type searchNewlyListed } from "@/lib/ebay/client";
 import { normalizeListing } from "@/lib/normalize";
 import { matchListing, type Game } from "@/lib/match";
-import { recomputeReferences, scoreListing } from "@/lib/reference";
+import { collectPeerAsks, peerFloorCents, peerKey, recomputeReferences, scoreListing } from "@/lib/reference";
 import { sweepAgedBins, sweepEndedAuctions } from "@/lib/sweeps";
-import { cursorState, deadLetters, listings, rawPrices, referencePrices, syncState } from "@/db/schema";
+import { cursorState, deadLetters, listings, referencePrices, syncState } from "@/db/schema";
 import type { Db } from "@/db/client";
 
 const OVERLAP_MS = 10 * 60_000;
@@ -135,11 +135,11 @@ export async function runScanTick(
           const m = await matchListing(db, game, n);
           stats.accepted++;
 
-          // Floor-rule scoring (M2 Task 5): only meaningful once the listing is
-          // tied to a real card with enough match confidence to trust the
-          // comparison. scoreListing itself is pure — all the DB access for its
-          // inputs (reference.ts's comp median, catalog raw market price) lives
-          // here, not in reference.ts.
+          // Scoring (spec §15): comp median preferred, live peer-ask floor as
+          // fallback. scoreListing itself is pure — all DB access for its
+          // inputs lives here. The new listing isn't inserted yet, so the
+          // peer set naturally excludes it; selfId is passed for symmetry
+          // with the nightly re-score path.
           let scored: ReturnType<typeof scoreListing> = null;
           if ((m.confidence === "high" || m.confidence === "medium") && m.cardId !== null) {
             const cardId = m.cardId;
@@ -153,13 +153,11 @@ export async function runScanTick(
                   eq(referencePrices.grade, n.grade ?? ""),
                 ),
               );
-            const [raw] = await db.select().from(rawPrices).where(eq(rawPrices.cardId, cardId));
+            const peerAsks = await collectPeerAsks(db, [cardId]);
             scored = scoreListing({
               totalCents: n.priceCents + n.shippingCents,
-              grader: n.grader,
-              grade: n.grade,
               compMedianCents: ref?.valueCents ?? null,
-              rawMarketCents: raw?.marketCents ?? null,
+              peerFloorCents: peerFloorCents(peerAsks.get(peerKey(cardId, n.grader, n.grade)), item.itemId),
             });
           }
 

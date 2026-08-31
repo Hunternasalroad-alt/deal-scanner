@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { makeTestDb } from "./helpers/testDb";
 import { runScanTick } from "@/lib/scan";
-import { apiBudget, cards, comps, cursorState, deadLetters, listings, rawPrices, referencePrices } from "@/db/schema";
+import { apiBudget, cards, comps, cursorState, deadLetters, listings, referencePrices } from "@/db/schema";
 import { BudgetExceededError, type EbayItemSummary } from "@/lib/ebay/client";
 
 const mk = (id: string, title: string, minsAgo: number, price = "150.00"): EbayItemSummary => ({
@@ -122,10 +122,17 @@ describe("runScanTick", () => {
     expect((await db.select().from(cursorState)).length).toBeGreaterThan(0);
   });
 
-  it("scores an accepted high-confidence listing against the raw floor at ingest", async () => {
+  it("scores an accepted high-confidence listing against the live peer floor at ingest", async () => {
     const { db } = await makeTestDb();
     const [card] = await db.insert(cards).values({ game: "pokemon", name: "Umbreon ex", setName: "PRE", cardNumber: "161", createdFrom: "catalog" }).returning();
-    await db.insert(rawPrices).values({ cardId: card.id, marketCents: 149924, source: "pokemontcgio", asOf: new Date() });
+    // Two live peer BIN asks define the floor (min incl. shipping = $1000.00);
+    // the incoming listing at $1200.00 scores against it.
+    await db.insert(listings).values([
+      { ebayItemId: "peer-1", cardId: card.id, categoryId: "183454", title: "peer 1", grader: "PSA", grade: "10",
+        priceCents: 100000, shippingCents: 0, listingType: "bin", matchConfidence: "high", status: "active" },
+      { ebayItemId: "peer-2", cardId: card.id, categoryId: "183454", title: "peer 2", grader: "PSA", grade: "10",
+        priceCents: 119000, shippingCents: 1000, listingType: "bin", matchConfidence: "medium", status: "active" },
+    ]);
     const search = vi.fn(async (_db, opts) =>
       opts.categoryId === "183454"
         ? { total: 1, items: [mk("v1|score|0", "Umbreon ex 161/131 PSA 10", 5, "1200.00")] }
@@ -136,8 +143,8 @@ describe("runScanTick", () => {
     expect(r.perCategory["183454"].accepted).toBe(1);
 
     const [row] = await db.select().from(listings).where(eq(listings.ebayItemId, "v1|score|0"));
-    expect(row.scoreBasis).toBe("raw_floor");
-    expect(row.scoreBps).toBe(Math.round((1 - 120000 / 149924) * 10000));
+    expect(row.scoreBasis).toBe("peer_floor");
+    expect(row.scoreBps).toBe(-2000); // 1 - 120000/100000, in bps (floor 100000 from the two peer BINs)
   });
 
   it("recomputes references once per UTC day, only at/after 9am UTC", async () => {
