@@ -17,8 +17,10 @@ describe("runScanTick", () => {
   it("ingests, drops scams, matches, is idempotent across double-run", async () => {
     const { db } = await makeTestDb();
     await db.insert(cards).values({ game: "pokemon", name: "Umbreon ex", setName: "PRE", cardNumber: "161", createdFrom: "catalog" });
-    const search = vi.fn(async (_db, opts) =>
-      opts.categoryId === "183454"
+    const searchCalls: { categoryId: string; aspectFilter?: string }[] = [];
+    const search = vi.fn(async (_db, opts) => {
+      searchCalls.push(opts);
+      return opts.categoryId === "183454"
         ? {
             total: 2,
             items: [
@@ -29,11 +31,24 @@ describe("runScanTick", () => {
               mk("v1|b|0", "Charizard PSA 10 candidate", 4),
             ],
           }
-        : { total: 0, items: [] });
+        : { total: 0, items: [] };
+    });
     const detail = vi.fn(async () => { throw new Error("no detail needed in this fixture"); });
 
     const r1 = await runScanTick(db, { search: search as never, detail: detail as never });
     expect(r1.perCategory["183454"]).toMatchObject({ fetched: 2, accepted: 1, dropped: 1, detailFetches: 1 });
+
+    // spec §16.4: one query per (category, sport-aspect) — pokemon plus three
+    // Sport-filtered queries sharing eBay category 261328, each keyed by its
+    // own cursor key so cursorState/report never collide the three sports.
+    const keys = Object.keys(r1.perCategory).sort();
+    expect(keys).toEqual(["183454", "261328:Baseball", "261328:Basketball", "261328:Football"]);
+    const sportCalls = searchCalls.filter((c) => c.categoryId === "261328");
+    expect(new Set(sportCalls.map((c) => c.aspectFilter))).toEqual(new Set([
+      "categoryId:261328,Sport:{Baseball}",
+      "categoryId:261328,Sport:{Basketball}",
+      "categoryId:261328,Sport:{Football}",
+    ]));
 
     const rows = await db.select().from(listings);
     expect(rows).toHaveLength(2);
@@ -89,21 +104,24 @@ describe("runScanTick", () => {
         : { total: 0, items: [] });
     const detail = vi.fn(async () => { throw new Error("skip detail"); });
     const r = await runScanTick(db, { search: search as never, detail: detail as never });
-    expect(r.perCategory["183454"]).toMatchObject({ pagesFetched: 20, samplingGap: true });
+    // pokemon's per-query page cap is 7 (spec §16.6), not the old flat 20.
+    expect(r.perCategory["183454"]).toMatchObject({ pagesFetched: 7, samplingGap: true });
     const dl = await db.select().from(deadLetters);
     expect(dl.some((d) => d.kind === "sampling_gap")).toBe(true);
     expect((await db.select().from(cursorState)).length).toBeGreaterThan(0);
   });
 
-  it("a short 20th page is clean exhaustion, not a gap", async () => {
+  it("a short page at the page cap is clean exhaustion, not a gap", async () => {
     const { db } = await makeTestDb();
+    // pokemon's page cap is 7: six full pages (0-5), then a short 7th (page
+    // index 6) that both exhausts results and lands exactly on the cap.
     const search = vi.fn(async (_db, opts) =>
       opts.categoryId === "183454"
-        ? { total: 3950, items: mkPage(opts.offset / 200, opts.offset / 200 < 19 ? 200 : 150) }
+        ? { total: 1350, items: mkPage(opts.offset / 200, opts.offset / 200 < 6 ? 200 : 150) }
         : { total: 0, items: [] });
     const detail = vi.fn(async () => { throw new Error("skip detail"); });
     const r = await runScanTick(db, { search: search as never, detail: detail as never });
-    expect(r.perCategory["183454"]).toMatchObject({ pagesFetched: 20, samplingGap: false });
+    expect(r.perCategory["183454"]).toMatchObject({ pagesFetched: 7, samplingGap: false });
     expect((await db.select().from(deadLetters)).filter((d) => d.kind === "sampling_gap")).toHaveLength(0);
   });
 

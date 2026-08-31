@@ -11,9 +11,7 @@ import type { Db } from "@/db/client";
 
 const OVERLAP_MS = 10 * 60_000;
 const FIRST_RUN_LOOKBACK_MS = 30 * 60_000;
-const DETAIL_CAP_PER_CATEGORY = 8;
 const DETAIL_MIN_PRICE_CENTS = 5000;
-const MAX_PAGES_HARD = 20; // spec §14.1: page to the cursor; cap bounds a pathological gap
 
 export type TickReport = {
   perCategory: Record<
@@ -50,17 +48,21 @@ export const TICK_MAX_DURATION_S = 120;
 const INGEST_BUDGET_MS = 75_000;
 const POST_INGEST_BUDGET_MS = (TICK_MAX_DURATION_S - 25) * 1000; // 95s for nightly + sweeps
 
-// Entries list, not an object literal: unverified sports IDs are all the literal
-// "TBV" and would collapse into a single object key. Skipping them keeps ticks
-// working (Pokémon-only) until the taxonomy verification step fills in real IDs.
-const GAMES: [string, Game][] = (
-  [
-    [CATEGORY_IDS.pokemon, "pokemon"],
-    [CATEGORY_IDS.baseball, "baseball"],
-    [CATEGORY_IDS.basketball, "basketball"],
-    [CATEGORY_IDS.football, "football"],
-  ] as [string, Game][]
-).filter(([id]) => id !== "TBV");
+// spec §16.4: one query per (category, sport-aspect). The game is known from
+// the query itself — no per-listing aspect inspection, no title guessing.
+// Page and detail caps per spec §16.6 (binding): pokemon 7/4, each sport
+// caps at 4/3/4 pages and 2 details, sized to measured inflow within the
+// 4,800/day budget at 10-minute cadence.
+type ScanQuery = {
+  cursorKey: string; categoryId: string; game: Game;
+  aspectFilter?: string; maxPages: number; detailCap: number;
+};
+const SCAN_QUERIES: ScanQuery[] = [
+  { cursorKey: CATEGORY_IDS.pokemon, categoryId: CATEGORY_IDS.pokemon, game: "pokemon", maxPages: 7, detailCap: 4 },
+  { cursorKey: `${CATEGORY_IDS.sports}:Baseball`, categoryId: CATEGORY_IDS.sports, game: "baseball", aspectFilter: `categoryId:${CATEGORY_IDS.sports},Sport:{Baseball}`, maxPages: 4, detailCap: 2 },
+  { cursorKey: `${CATEGORY_IDS.sports}:Basketball`, categoryId: CATEGORY_IDS.sports, game: "basketball", aspectFilter: `categoryId:${CATEGORY_IDS.sports},Sport:{Basketball}`, maxPages: 3, detailCap: 2 },
+  { cursorKey: `${CATEGORY_IDS.sports}:Football`, categoryId: CATEGORY_IDS.sports, game: "football", aspectFilter: `categoryId:${CATEGORY_IDS.sports},Sport:{Football}`, maxPages: 4, detailCap: 2 },
+];
 
 export async function runScanTick(
   db: Db,
@@ -72,22 +74,22 @@ export async function runScanTick(
   const report: TickReport = { perCategory: {}, budgetStopped: false };
   const withinPostIngestBudget = () => clock() - tickStart <= POST_INGEST_BUDGET_MS;
 
-  for (const [categoryId, game] of GAMES) {
+  for (const q of SCAN_QUERIES) {
     const stats = { fetched: 0, accepted: 0, dropped: 0, detailFetches: 0, pagesFetched: 0, samplingGap: false };
-    report.perCategory[categoryId] = stats;
+    report.perCategory[q.cursorKey] = stats;
     try {
-      const [cursor] = await db.select().from(cursorState).where(eq(cursorState.categoryId, categoryId));
+      const [cursor] = await db.select().from(cursorState).where(eq(cursorState.categoryId, q.cursorKey));
       const since = new Date((cursor?.lastItemTs.getTime() ?? now.getTime() - FIRST_RUN_LOOKBACK_MS) - OVERLAP_MS);
       let newestSeen = cursor?.lastItemTs ?? since;
       let exhausted = false;
 
-      for (let page = 0; page < MAX_PAGES_HARD; page++) {
+      for (let page = 0; page < q.maxPages; page++) {
         // Ingestion time guard (final review, item a): every page after the
         // first re-checks the budget before paying for another eBay round
         // trip. Leaving `exhausted` false here routes a time-out through the
         // same sampling_gap dead-letter path as the page-cap case below.
         if (page > 0 && clock() - tickStart > INGEST_BUDGET_MS) break;
-        const { items } = await deps.search(db, { categoryId, sinceIso: since.toISOString(), offset: page * 200 });
+        const { items } = await deps.search(db, { categoryId: q.categoryId, sinceIso: since.toISOString(), offset: page * 200, aspectFilter: q.aspectFilter });
         stats.pagesFetched++;
         if (items.length === 0) { exhausted = true; break; }
 
@@ -118,7 +120,7 @@ export async function runScanTick(
 
           let n = normalizeListing(item);
           let usedDetail = false;
-          if (n.kind === "accepted" && (!n.grade || !n.certNumber) && n.priceCents >= DETAIL_MIN_PRICE_CENTS && stats.detailFetches < DETAIL_CAP_PER_CATEGORY) {
+          if (n.kind === "accepted" && (!n.grade || !n.certNumber) && n.priceCents >= DETAIL_MIN_PRICE_CENTS && stats.detailFetches < q.detailCap) {
             stats.detailFetches++;
             try { n = normalizeListing(item, await deps.detail(db, item.itemId)); usedDetail = true; }
             catch (e) { if (e instanceof BudgetExceededError) throw e; /* detail failure: proceed with title-only */ }
@@ -129,7 +131,7 @@ export async function runScanTick(
             const rawCents = Number(item.price?.value);
             // spec §16.1: drops are stored rawless — the row exists only to dedupe re-fetches and feed dropReason observability.
             await db.insert(listings).values({
-              ebayItemId: item.itemId, title: item.title, categoryId,
+              ebayItemId: item.itemId, title: item.title, categoryId: q.categoryId,
               // NaN guard: a malformed price string must not poison the insert and 500 the tick
               priceCents: Number.isFinite(rawCents) ? Math.round(rawCents * 100) : 0,
               listingType: item.buyingOptions.includes("AUCTION") ? "auction" : "bin",
@@ -138,7 +140,7 @@ export async function runScanTick(
             continue;
           }
 
-          const m = await matchListing(db, game, n);
+          const m = await matchListing(db, q.game, n);
           stats.accepted++;
 
           // Scoring (spec §15): comp median preferred, live peer-ask floor as
@@ -168,7 +170,7 @@ export async function runScanTick(
           }
 
           await db.insert(listings).values({
-            ebayItemId: item.itemId, title: item.title, categoryId,
+            ebayItemId: item.itemId, title: item.title, categoryId: q.categoryId,
             cardId: m.cardId, matchConfidence: m.confidence,
             grader: n.grader, grade: n.grade, certNumber: n.certNumber,
             priceCents: n.priceCents, shippingCents: n.shippingCents, listingType: n.listingType,
@@ -188,12 +190,12 @@ export async function runScanTick(
         stats.samplingGap = true;
         await db.insert(deadLetters).values({
           kind: "sampling_gap",
-          payload: { categoryId, since: since.toISOString(), newestSeen: newestSeen.toISOString() },
-          error: `page cap ${MAX_PAGES_HARD} hit before exhausting results`,
+          payload: { categoryId: q.cursorKey, since: since.toISOString(), newestSeen: newestSeen.toISOString() },
+          error: `page cap ${q.maxPages} hit before exhausting results`,
         });
       }
 
-      await db.insert(cursorState).values({ categoryId, lastItemTs: newestSeen })
+      await db.insert(cursorState).values({ categoryId: q.cursorKey, lastItemTs: newestSeen })
         .onConflictDoUpdate({ target: cursorState.categoryId, set: { lastItemTs: newestSeen } });
     } catch (e) {
       if (e instanceof BudgetExceededError) { report.budgetStopped = true; break; }

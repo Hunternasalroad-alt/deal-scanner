@@ -146,10 +146,7 @@ The workflow runs automatically every 5 minutes on a schedule; manual run overri
 ### M2 (Live mode + comp engine)
 - [ ] Run `pnpm db:push` to apply pending migrations
 - [ ] Run `pnpm sync:pokemon` to populate reference card database from PokemonTCG API
-- [ ] Verify eBay category IDs for baseball, basketball, and football (currently marked "TBV" in `src/lib/ebay/categories.ts`):
-  - Use eBay Taxonomy API's `get_category_suggestions` endpoint with `EBAY_CLIENT_ID`/`SECRET`
-  - Search for "trading cards" in each category
-  - Replace string "TBV" with numeric category ID
+- [x] Verify eBay category IDs for baseball, basketball, and football — all three resolve to the single sports leaf category `261328` (same category as Pokémon's `183454`), split into per-sport queries via eBay's `Sport` item-aspect filter; see `src/lib/ebay/categories.ts`
 - [ ] Set `DRY_RUN=0` in Vercel environment once M3 alert-sending exists (`DRY_RUN` has no effect before then — ingest is already live in M1)
 - [ ] First live scan tick (manual or scheduled) begins accumulating real listings
 
@@ -161,11 +158,12 @@ The workflow runs automatically every 5 minutes on a schedule; manual run overri
 
 ## Architecture Notes
 
-- **Cadence:** `/api/scan` runs every 5 minutes (GitHub Actions `scan-heartbeat`)
+- **Cadence:** `/api/scan` currently runs every 5 minutes via GitHub Actions (`scan-heartbeat`); the intended heartbeat going forward is an external 10-minute scheduler (cron-job.org, POSTing with the `SCAN_SECRET` bearer token), with GitHub Actions kept as backup
+- **Scanning scope:** each tick runs four queries — graded Pokémon singles (category `183454`) plus graded baseball/basketball/football singles, which all resolve to the single sports leaf category `261328` and are split into three per-tick queries via eBay's `Sport` item-aspect filter
 - **Timeout:** Each tick is capped at 60 seconds (eBay search + detail fetches)
 - **Overlap:** 5-min schedule vs. 60-sec max runtime = no concurrent ticks (spec §8)
 - **Retry:** Single 1.5s retry on 429/5xx; unfinished work resumes next tick via cursors
-- **Budget:** eBay ingestion hard-stops at 4,800 calls/day; nominal ceiling is ≤11 calls per category per tick (3 search pages + 8 detail fetches) — ~3,200/day at the current Pokémon-only cadence (sports categories still "TBV")
+- **Budget:** eBay ingestion hard-stops at 4,800 calls/day; per-tick page caps are 7 pokemon / 4 baseball / 3 basketball / 4 football, with detail-fetch caps of 4 pokemon / 2 per sport — sized to measured inflow within the daily budget at a 10-minute cadence
 - **Idempotency:** All DB writes use upserts; cursor-based pagination ensures no duplicate ingests
 
 ## Spec References

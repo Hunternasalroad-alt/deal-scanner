@@ -95,7 +95,7 @@ async function browseGet(db: Db, kind: "search" | "detail", url: string, fetchIm
 
 export async function searchNewlyListed(
   db: Db,
-  opts: { categoryId: string; sinceIso: string; offset: number },
+  opts: { categoryId: string; sinceIso: string; offset: number; aspectFilter?: string },
   fetchImpl: typeof fetch = fetch,
 ): Promise<EbaySearchPage> {
   const params = new URLSearchParams({
@@ -105,6 +105,7 @@ export async function searchNewlyListed(
     offset: String(opts.offset),
     filter: `itemStartDate:[${opts.sinceIso}..]`, // ".." = open-ended range; a bare [ts] is not eBay's documented filter form
   });
+  if (opts.aspectFilter) params.set("aspect_filter", opts.aspectFilter);
   const body = (await browseGet(db, "search", `${BROWSE}/item_summary/search?${params}`, fetchImpl)) as {
     total?: number; itemSummaries?: EbayItemSummary[];
   };

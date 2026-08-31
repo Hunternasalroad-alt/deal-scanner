@@ -49,6 +49,30 @@ describe("ebay client", () => {
     expect(url).toContain(encodeURIComponent("itemStartDate:[2026-08-15T00:00:00Z..]"));
   });
 
+  it("includes aspect_filter only when provided", async () => {
+    const { db } = await makeTestDb();
+    const withFilter = vi
+      .fn()
+      .mockResolvedValueOnce(tokenResponse as never)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ total: 0, itemSummaries: [] }) } as never);
+    await searchNewlyListed(
+      db,
+      { categoryId: "261328", sinceIso: "2026-08-15T00:00:00Z", offset: 0, aspectFilter: "categoryId:261328,Sport:{Baseball}" },
+      withFilter as never,
+    );
+    const urlWithFilter = String(withFilter.mock.calls[1][0]);
+    expect(urlWithFilter).toContain(`aspect_filter=${encodeURIComponent("categoryId:261328,Sport:{Baseball}")}`);
+
+    resetEbayAuthCache(); // fresh token mock sequence for the second call below
+    const withoutFilter = vi
+      .fn()
+      .mockResolvedValueOnce(tokenResponse as never)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ total: 0, itemSummaries: [] }) } as never);
+    await searchNewlyListed(db, { categoryId: "183454", sinceIso: "2026-08-15T00:00:00Z", offset: 0 }, withoutFilter as never);
+    const urlWithoutFilter = String(withoutFilter.mock.calls[1][0]);
+    expect(urlWithoutFilter).not.toContain("aspect_filter");
+  });
+
   it("retries once on 429 then succeeds", async () => {
     const { db } = await makeTestDb();
     const f = vi
