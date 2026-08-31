@@ -251,11 +251,13 @@ export async function runScanTick(
   // Soft ceiling (final review, item f): once today's api_budget spend passes
   // this, skip both sweeps for the rest of the tick. At the intended 10-minute
   // cadence, ingestion alone needs ≈4,032 of the 4,800 daily call budget;
-  // sweeps stop once total spend passes 1,500 so late-day ingestion is never
-  // starved (derivation: sweep-only allowance ≈ 4,800 − 4,032). Not a failure —
-  // normal backpressure — so report.sweeps simply stays undefined and no dead
-  // letter is written. Computed once, like the other two guards, and reused by
-  // both phase checks below.
+  // Ceiling chosen from the starvation inequality (any C ≤ ~1,790 keeps
+  // late-day ingestion whole: after crossing C, remaining ingestion demand
+  // ≈2,800 fits in 4,800 − C − one in-flight sweep); 1,500 keeps sweeps
+  // running most of the morning while leaving ~500 calls of slack. Not a
+  // failure — normal backpressure — so report.sweeps simply stays undefined
+  // and no dead letter is written. Computed once, like the other two guards,
+  // and reused by both phase checks below.
   const SWEEP_SOFT_CEILING = 1_500;
   const underSweepCeiling = (await getTodaySpend(db)) <= SWEEP_SOFT_CEILING;
 
