@@ -12,7 +12,7 @@ export default async function FeedPage() {
     if (r.refValueCents != null && r.refValueCents > 0) return { cents: r.refValueCents, basis: "comps" };
     if (r.cardId == null || r.grader == null) return null;
     const floor = peerFloorCents(peerAsks.get(peerKey(r.cardId, r.grader, r.grade)), r.id);
-    if (floor != null) return { cents: floor, basis: "peers" };
+    if (floor != null) return { cents: floor, basis: "cheapest live copy" };
     return null;
   };
   const db = getDb();
