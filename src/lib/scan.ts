@@ -73,11 +73,16 @@ export async function runScanTick(
   const now = deps.now?.() ?? new Date();
   const report: TickReport = { perCategory: {}, budgetStopped: false };
   const withinPostIngestBudget = () => clock() - tickStart <= POST_INGEST_BUDGET_MS;
+  // Rotate the start index by minute so pokemon isn't structurally first on every slow tick, spreading which query a tight budget starves (final review, item c).
+  const start = now.getUTCMinutes() % SCAN_QUERIES.length;
 
-  for (const q of SCAN_QUERIES) {
+  for (let i = 0; i < SCAN_QUERIES.length; i++) {
+    const q = SCAN_QUERIES[(start + i) % SCAN_QUERIES.length];
     const stats = { fetched: 0, accepted: 0, dropped: 0, detailFetches: 0, pagesFetched: 0, samplingGap: false };
     report.perCategory[q.cursorKey] = stats;
     try {
+      // A query skipped whole here is not data loss (cursor unmoved → next tick re-covers), unlike a mid-query cap which records its gap (final review, item b).
+      if (clock() - tickStart > INGEST_BUDGET_MS) continue;
       const [cursor] = await db.select().from(cursorState).where(eq(cursorState.categoryId, q.cursorKey));
       const since = new Date((cursor?.lastItemTs.getTime() ?? now.getTime() - FIRST_RUN_LOOKBACK_MS) - OVERLAP_MS);
       let newestSeen = cursor?.lastItemTs ?? since;
@@ -106,6 +111,7 @@ export async function runScanTick(
         if (existing.size > 0)
           await db.update(listings).set({ lastSeen: sql`now()` }).where(inArray(listings.ebayItemId, [...existing]));
 
+        const droppedRows: (typeof listings.$inferInsert)[] = [];
         for (const item of items) {
           stats.fetched++;
           const created = new Date(item.itemCreationDate);
@@ -130,13 +136,13 @@ export async function runScanTick(
             stats.dropped++;
             const rawCents = Number(item.price?.value);
             // spec §16.1: drops are stored rawless — the row exists only to dedupe re-fetches and feed dropReason observability.
-            await db.insert(listings).values({
+            droppedRows.push({
               ebayItemId: item.itemId, title: item.title, categoryId: q.categoryId,
               // NaN guard: a malformed price string must not poison the insert and 500 the tick
               priceCents: Number.isFinite(rawCents) ? Math.round(rawCents * 100) : 0,
               listingType: item.buyingOptions.includes("AUCTION") ? "auction" : "bin",
               dropReason: n.reason,
-            }).onConflictDoNothing();
+            });
             continue;
           }
 
@@ -183,6 +189,11 @@ export async function runScanTick(
             raw: rawForStorage,
           }).onConflictDoNothing();
         }
+        // Batch dropped-row inserts once per page (final review, item a): the dropped
+        // path previously awaited one INSERT per dropped item (~190 sequential ~77ms
+        // round trips on an all-new page). Accepted-path inserts stay per-item above —
+        // they're few and each needs its own scoring first.
+        if (droppedRows.length > 0) await db.insert(listings).values(droppedRows).onConflictDoNothing();
         if (items.length < 200) { exhausted = true; break; }
       }
 
@@ -238,12 +249,14 @@ export async function runScanTick(
   }
 
   // Soft ceiling (final review, item f): once today's api_budget spend passes
-  // this, skip both sweeps for the rest of the tick. Not a failure — normal
-  // backpressure protecting next-day ingestion budget if the cron cadence ever
-  // tightens — so report.sweeps simply stays undefined and no dead letter is
-  // written. Computed once, like the other two guards, and reused by both
-  // phase checks below.
-  const SWEEP_SOFT_CEILING = 3_600;
+  // this, skip both sweeps for the rest of the tick. At the intended 10-minute
+  // cadence, ingestion alone needs ≈4,032 of the 4,800 daily call budget;
+  // sweeps stop once total spend passes 1,500 so late-day ingestion is never
+  // starved (derivation: sweep-only allowance ≈ 4,800 − 4,032). Not a failure —
+  // normal backpressure — so report.sweeps simply stays undefined and no dead
+  // letter is written. Computed once, like the other two guards, and reused by
+  // both phase checks below.
+  const SWEEP_SOFT_CEILING = 1_500;
   const underSweepCeiling = (await getTodaySpend(db)) <= SWEEP_SOFT_CEILING;
 
   if (!report.budgetStopped && underSweepCeiling && withinPostIngestBudget()) {

@@ -107,12 +107,12 @@ Trigger the scheduled workflow manually:
 4. Wait ~30s for the workflow to complete
 5. Check `/feed` for new listings (should grow tick-to-tick)
 
-The workflow runs automatically every 5 minutes on a schedule; manual run overrides the schedule.
+The workflow runs automatically every 10 minutes on a schedule; manual run overrides the schedule.
 
 ## Deploy Checklist
 
 1. **Push to GitHub:**
-   - Repo must be **public**. A private repo's 2,000 free GitHub Actions minutes/month cover only ~1 week of the 5-minute cron (288 runs/day); a public repo gets unlimited Actions minutes, which is what keeps this $0.
+   - Repo must be **public**. A private repo's 2,000 free GitHub Actions minutes/month cover only ~2 weeks of the 10-minute cron (144 runs/day); a public repo gets unlimited Actions minutes, which is what keeps this $0.
    ```bash
    git push origin m1-ingest
    ```
@@ -146,7 +146,7 @@ The workflow runs automatically every 5 minutes on a schedule; manual run overri
 ### M2 (Live mode + comp engine)
 - [ ] Run `pnpm db:push` to apply pending migrations
 - [ ] Run `pnpm sync:pokemon` to populate reference card database from PokemonTCG API
-- [x] Verify eBay category IDs for baseball, basketball, and football — all three resolve to the single sports leaf category `261328` (same category as Pokémon's `183454`), split into per-sport queries via eBay's `Sport` item-aspect filter; see `src/lib/ebay/categories.ts`
+- [x] Verify eBay category IDs for baseball, basketball, and football — all three resolve to the single sports leaf category `261328` (one leaf category carrying all three sports, the way `183454` carries all CCGs), split into per-sport queries via eBay's `Sport` item-aspect filter; see `src/lib/ebay/categories.ts`
 - [ ] Set `DRY_RUN=0` in Vercel environment once M3 alert-sending exists (`DRY_RUN` has no effect before then — ingest is already live in M1)
 - [ ] First live scan tick (manual or scheduled) begins accumulating real listings
 
@@ -158,10 +158,10 @@ The workflow runs automatically every 5 minutes on a schedule; manual run overri
 
 ## Architecture Notes
 
-- **Cadence:** `/api/scan` currently runs every 5 minutes via GitHub Actions (`scan-heartbeat`); the intended heartbeat going forward is an external 10-minute scheduler (cron-job.org, POSTing with the `SCAN_SECRET` bearer token), with GitHub Actions kept as backup
+- **Cadence:** `/api/scan` runs every 10 minutes via GitHub Actions (`scan-heartbeat`) as a best-effort backup; the intended primary heartbeat is an external 10-minute scheduler (cron-job.org, POSTing with the `SCAN_SECRET` bearer token)
 - **Scanning scope:** each tick runs four queries — graded Pokémon singles (category `183454`) plus graded baseball/basketball/football singles, which all resolve to the single sports leaf category `261328` and are split into three per-tick queries via eBay's `Sport` item-aspect filter
-- **Timeout:** Each tick is capped at 60 seconds (eBay search + detail fetches)
-- **Overlap:** 5-min schedule vs. 60-sec max runtime = no concurrent ticks (spec §8)
+- **Timeout:** Each tick is capped at 120 seconds (eBay search + detail fetches)
+- **Overlap:** with two schedulers hitting the same endpoint, runs may rarely overlap (GitHub's `concurrency` group keeps its own backup runs from stacking, but can't see the external scheduler) — the daily api_budget counter, not schedule spacing, is the backstop against runaway concurrent spend
 - **Retry:** Single 1.5s retry on 429/5xx; unfinished work resumes next tick via cursors
 - **Budget:** eBay ingestion hard-stops at 4,800 calls/day; per-tick page caps are 7 pokemon / 4 baseball / 3 basketball / 4 football, with detail-fetch caps of 4 pokemon / 2 per sport — sized to measured inflow within the daily budget at a 10-minute cadence
 - **Idempotency:** All DB writes use upserts; cursor-based pagination ensures no duplicate ingests

@@ -55,25 +55,34 @@ export async function matchListing(db: Db, game: Game, n: Accepted): Promise<Mat
   }
 
   // sports
+  // I2 (final review): a sports N/N is a serial print-run, not a card number — never treat it as identity.
+  if (n.titleFacts.cardNumberFromFraction) return { cardId: null, confidence: "low", createdCard: false };
   if (yearHint && cardNumberHint && nameTokens.length >= 2) {
-    const nameParts = sportsNameTokens(nameTokens);
+    const nameParts = sportsNameTokens(nameTokens).filter(
+      (t) => !t.startsWith("#") && !/^\d+\/\d+$/.test(t) && t.toLowerCase() !== cardNumberHint.toLowerCase(),
+    );
     // spec §16.5a: no usable name material → never insert an empty-name card;
     // the listing stores as low-confidence unmatched like any other.
     if (nameParts.length === 0) return { cardId: null, confidence: "low", createdCard: false };
     const name = nameParts.map(titleCase).join(" ");
+    // I1 (final review): year is the sports set-analog — firehose sports rows
+    // key their setName on it so a second year of the same player+number gets
+    // its own identity-index row instead of silently colliding with (and then
+    // failing to re-find) the first year's row.
+    const setName = String(yearHint);
     const existing = await db
       .select().from(cards)
-      .where(and(eq(cards.game, game), eq(cards.year, yearHint), eq(cards.cardNumber, cardNumberHint), eq(cards.name, name)));
+      .where(and(eq(cards.game, game), eq(cards.setName, setName), eq(cards.cardNumber, cardNumberHint), eq(cards.name, name)));
     if (existing.length === 1) return { cardId: existing[0].id, confidence: "high", createdCard: false };
     const [created] = await db
       .insert(cards)
-      .values({ game, name, year: yearHint, cardNumber: cardNumberHint, createdFrom: "firehose" })
+      .values({ game, name, setName, year: yearHint, cardNumber: cardNumberHint, createdFrom: "firehose" })
       .onConflictDoNothing()
       .returning();
     if (created) return { cardId: created.id, confidence: "medium", createdCard: true };
     const refound = await db
       .select().from(cards)
-      .where(and(eq(cards.game, game), eq(cards.year, yearHint), eq(cards.cardNumber, cardNumberHint), eq(cards.name, name)));
+      .where(and(eq(cards.game, game), eq(cards.setName, setName), eq(cards.cardNumber, cardNumberHint), eq(cards.name, name)));
     return refound.length === 1
       ? { cardId: refound[0].id, confidence: "high", createdCard: false }
       : { cardId: null, confidence: "low", createdCard: false };

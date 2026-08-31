@@ -7,7 +7,14 @@ export type Accepted = {
   certNumber: string | null;
   priceCents: number; shippingCents: number;
   listingType: "auction" | "bin";
-  titleFacts: { setHint: string | null; cardNumberHint: string | null; yearHint: number | null; nameTokens: string[] };
+  titleFacts: {
+    setHint: string | null; cardNumberHint: string | null;
+    // I2 (final review): true only when cardNumberHint came from the N/N
+    // fraction pattern ("23/99") rather than a "#"-prefixed or lettered
+    // extraction — a sports N/N is a serial print-run, not a card number.
+    cardNumberFromFraction?: boolean;
+    yearHint: number | null; nameTokens: string[];
+  };
 };
 export type Dropped = { kind: "dropped"; reason: "raw_candidate_phrasing" | "unsupported_grader" | "not_graded" | "no_price" };
 export type Normalized = Accepted | Dropped;
@@ -64,10 +71,11 @@ export function normalizeListing(item: EbayItemSummary, detail?: EbayItemDetail)
   // Grader-stripped first: a lettered gallery/promo number (GG40, TG12, SM9a,
   // SWSH250) must never be extracted from "PSA 10" or similar grader text.
   const strippedTitle = title.replace(GRADER_RX, " ");
-  const numM =
-    /#\s?(\w{1,6})\b/.exec(title) ??
-    /\b(\d{1,3})\s*\/\s*\d{1,3}\b/.exec(title) ??
-    /\b([A-Z]{2,4}\d{1,3}[a-z]?)\b/.exec(strippedTitle);
+  const hashM = /#\s?(\w{1,6})\b/.exec(title);
+  const fractionM = /\b(\d{1,3})\s*\/\s*\d{1,3}\b/.exec(title);
+  const letterM = /\b([A-Z]{2,4}\d{1,3}[a-z]?)\b/.exec(strippedTitle);
+  const numM = hashM ?? fractionM ?? letterM;
+  const cardNumberFromFraction = hashM === null && fractionM !== null;
   const nameTokens = strippedTitle
     .replace(/[^a-zA-Z0-9\s/#]/g, " ")
     .split(/\s+/)
@@ -83,6 +91,7 @@ export function normalizeListing(item: EbayItemSummary, detail?: EbayItemDetail)
     titleFacts: {
       setHint: null,
       cardNumberHint: numM ? numM[1] : null,
+      cardNumberFromFraction,
       yearHint: yearM ? Number(yearM[1]) : null,
       nameTokens,
     },

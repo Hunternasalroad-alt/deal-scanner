@@ -134,7 +134,13 @@ describe("runScanTick", () => {
       return { total: 99999, items: mkPage(opts.offset / 200, 200) };
     });
     const detail = vi.fn(async () => { throw new Error("skip"); });
-    const r = await runScanTick(db, { search: search as never, detail: detail as never, clock });
+    // Fixed minutes=0 keeps pokemon first under the stateless rotation (final
+    // review, item c) so this stays a pure test of the ingestion time guard,
+    // not of which query the rotation happens to start on; hour<9 keeps the
+    // nightly gate from firing once the reduced call count (below) leaves more
+    // of the post-ingestion budget window than the pre-fix trace used.
+    const now = () => new Date("2026-01-01T00:00:00.000Z");
+    const r = await runScanTick(db, { search: search as never, detail: detail as never, clock, now });
     expect(r.perCategory["183454"]).toMatchObject({ pagesFetched: 2, samplingGap: true }); // 40s, 80s → guard stops page 3
     expect((await db.select().from(deadLetters)).some((d) => d.kind === "sampling_gap")).toBe(true);
     expect((await db.select().from(cursorState)).length).toBeGreaterThan(0);
@@ -231,5 +237,29 @@ describe("runScanTick", () => {
     const detail = vi.fn();
     const r = await runScanTick(db, { search: search as never, detail: detail as never });
     expect(r.sweeps).toBeUndefined();
+  });
+
+  it("carries a realistic sports title end-to-end: search → normalize → match → insert (final review, item I5)", async () => {
+    const { db } = await makeTestDb();
+    const search = vi.fn(async (_db, opts) =>
+      opts.aspectFilter === "categoryId:261328,Sport:{Football}"
+        ? { total: 1, items: [mk("v1|cjstroud|0", "2023 Panini Prizm #339 CJ Stroud PSA 10 Rookie RC", 5)] }
+        : { total: 0, items: [] });
+    const detail = vi.fn(async () => { throw new Error("no detail needed in this fixture"); });
+
+    const r = await runScanTick(db, { search: search as never, detail: detail as never });
+    expect(r.perCategory["261328:Football"]).toMatchObject({ fetched: 1, accepted: 1 });
+
+    const [row] = await db.select().from(listings).where(eq(listings.ebayItemId, "v1|cjstroud|0"));
+    expect(row.categoryId).toBe("261328");
+    expect(row.grader).toBe("PSA");
+    expect(row.cardId).not.toBeNull();
+
+    // I1/I2-correct identity: setName carries the year, and the serial-print
+    // token ("#339") that isn't the card's identity never leaks into the name.
+    const [card] = await db.select().from(cards).where(eq(cards.id, row.cardId!));
+    expect(card.setName).toBe("2023");
+    expect(card.name).toContain("Cj Stroud");
+    expect(card.name).not.toContain("#339");
   });
 });

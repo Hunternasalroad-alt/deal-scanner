@@ -62,6 +62,29 @@ describe("matchListing", () => {
     expect(r.createdCard).toBe(true);
     const [card] = await db.select().from(cards).where(eq(cards.game, "football"));
     expect(card.name).toBe("Cj Stroud"); // titleCase of both tokens — 2-letter token kept
+    // I1 (final review): setName carries the year so a second year of the same
+    // player+number gets its own identity-index row instead of colliding.
+    expect(card.setName).toBe("2023");
+  });
+
+  it("sports: a fraction-derived cardNumberHint (serial print-run, not a card number) never matches or creates", async () => {
+    const { db } = await makeTestDb();
+    // Absent the I2 fraction gate this would otherwise create a card — proves
+    // the gate, not just the pre-existing yearHint/nameTokens requirement, is
+    // what's blocking it.
+    const n = acc({ cardNumberHint: "23", cardNumberFromFraction: true, yearHint: 2023, nameTokens: ["Justin", "Stroud"] });
+    const r = await matchListing(db, "football", n);
+    expect(r).toEqual({ cardId: null, confidence: "low", createdCard: false });
+    expect(await db.select().from(cards)).toEqual([]);
+  });
+
+  it("sports: strips #-prefixed and serial-fraction tokens, and the cardNumberHint itself, from name material", async () => {
+    const { db } = await makeTestDb();
+    const n = acc({ cardNumberHint: "339", cardNumberFromFraction: false, yearHint: 2023, nameTokens: ["#339", "23/99", "Stroud"] });
+    const r = await matchListing(db, "football", n);
+    expect(r.createdCard).toBe(true);
+    const [card] = await db.select().from(cards).where(eq(cards.game, "football"));
+    expect(card.name).toBe("Stroud"); // both junk tokens ("#339", "23/99") excluded
   });
 
   it("sports: never creates a card with an empty name", async () => {

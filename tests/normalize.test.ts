@@ -113,4 +113,16 @@ describe("normalizeListing", () => {
     if (n.kind !== "accepted") throw new Error("expected accepted");
     expect(n.titleFacts.cardNumberHint).toBe("166");
   });
+
+  it("flags a fraction-derived cardNumberHint but not a #-prefixed one (final review, item I2)", () => {
+    const fraction = normalizeListing(base("2021 Prizm Justin Jefferson 23/99 PSA 10"));
+    if (fraction.kind !== "accepted") throw new Error("expected accepted");
+    expect(fraction.titleFacts.cardNumberHint).toBe("23");
+    expect(fraction.titleFacts.cardNumberFromFraction).toBe(true);
+
+    const hashed = normalizeListing(base("2023 Panini Prizm #339 CJ Stroud PSA 10"));
+    if (hashed.kind !== "accepted") throw new Error("expected accepted");
+    expect(hashed.titleFacts.cardNumberHint).toBe("339");
+    expect(hashed.titleFacts.cardNumberFromFraction).toBeFalsy();
+  });
 });
