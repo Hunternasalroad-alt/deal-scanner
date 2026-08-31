@@ -3,6 +3,7 @@ import { CATEGORY_IDS } from "@/lib/ebay/categories";
 import { BudgetExceededError, getTodaySpend, type getItemDetail, type searchNewlyListed } from "@/lib/ebay/client";
 import { normalizeListing } from "@/lib/normalize";
 import { matchListing, type Game } from "@/lib/match";
+import { pruneDroppedListings } from "@/lib/prune";
 import { collectPeerAsks, peerFloorCents, peerKey, recomputeReferences, rescoreActiveListings, scoreListing } from "@/lib/reference";
 import { sweepAgedBins, sweepEndedAuctions } from "@/lib/sweeps";
 import { cursorState, deadLetters, listings, referencePrices, syncState } from "@/db/schema";
@@ -34,6 +35,8 @@ export type TickReport = {
   referencesRecomputed?: number;
   // spec §15.3: rows re-scored by the nightly pass (present only when the nightly gate ran)
   rescored?: number;
+  // spec §16.2: dropped-listings hygiene counters (present only when the nightly gate ran)
+  pruned?: { rawsNulled: number; deleted: number };
 };
 
 // Derived timing budget (final review): the route's maxDuration is 120s (kept in
@@ -124,12 +127,13 @@ export async function runScanTick(
           if (n.kind === "dropped") {
             stats.dropped++;
             const rawCents = Number(item.price?.value);
+            // spec §16.1: drops are stored rawless — the row exists only to dedupe re-fetches and feed dropReason observability.
             await db.insert(listings).values({
               ebayItemId: item.itemId, title: item.title, categoryId,
               // NaN guard: a malformed price string must not poison the insert and 500 the tick
               priceCents: Number.isFinite(rawCents) ? Math.round(rawCents * 100) : 0,
               listingType: item.buyingOptions.includes("AUCTION") ? "auction" : "bin",
-              dropReason: n.reason, raw: rawForStorage,
+              dropReason: n.reason,
             }).onConflictDoNothing();
             continue;
           }
@@ -215,6 +219,8 @@ export async function runScanTick(
         report.referencesRecomputed = upserted;
         const { rescored } = await rescoreActiveListings(db, { shouldContinue: withinPostIngestBudget });
         report.rescored = rescored;
+        const { rawsNulled, deleted } = await pruneDroppedListings(db, { shouldContinue: withinPostIngestBudget, now });
+        report.pruned = { rawsNulled, deleted };
         await db
           .insert(syncState)
           .values({ key: "referenceRecomputeDay", value: today })

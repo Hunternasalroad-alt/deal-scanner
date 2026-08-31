@@ -163,6 +163,12 @@ describe("runScanTick", () => {
       grader: "PSA", grade: "10", priceCents: 50000, shippingCents: 0, listingType: "bin",
       matchConfidence: "high", status: "active", scoreBps: 1234, scoreBasis: "raw_floor",
     });
+    // Dropped listing older than the 7-day prune window — the nightly gate's
+    // prune pass must delete it and report the count.
+    await db.insert(listings).values({
+      ebayItemId: "dropped-old", title: "d", categoryId: "183454", priceCents: 1000,
+      listingType: "bin", dropReason: "no_grader", firstSeen: new Date(Date.now() - 10 * 86400_000),
+    });
     const search = vi.fn(async () => ({ total: 0, items: [] }));
     const detail = vi.fn(async () => { throw new Error("no detail needed in this fixture"); });
 
@@ -178,6 +184,7 @@ describe("runScanTick", () => {
     expect(r2.referencesRecomputed).toBe(1);
     expect(await db.select().from(referencePrices)).toHaveLength(1);
     expect(r2.rescored).toBeGreaterThanOrEqual(1);
+    expect(r2.pruned).toEqual({ rawsNulled: 0, deleted: 1 });
 
     const r3 = await runScanTick(db, { search: search as never, detail: detail as never, now: () => due });
     expect(r3.referencesRecomputed).toBeUndefined(); // already ran today
