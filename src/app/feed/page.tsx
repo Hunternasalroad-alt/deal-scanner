@@ -52,7 +52,7 @@ export default async function FeedPage() {
 
   return (
     <main style={{ fontFamily: "ui-monospace, monospace", padding: 24 }}>
-      <h1>Dry-run feed ({rows.length})</h1>
+      <h1>Deal feed ({rows.length})</h1>
       <table cellPadding={6}>
         <thead><tr><th align="left">Card</th><th align="left">Title</th><th>Slab</th><th align="right">Price</th><th align="right">Value</th><th align="right">Last Sale</th><th align="right">Avg (3)</th><th align="right">Avg (5)</th><th align="right">Avg 90d</th><th>Match</th><th align="right">Score</th></tr></thead>
         <tbody>
