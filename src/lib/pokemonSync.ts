@@ -42,9 +42,9 @@ function parsePokePage(raw: unknown, page: number): PokeApiCard[] {
   );
 }
 
-// Batched: 2 DB round trips per 250-card page instead of 1-2 per card. Over the
-// Neon HTTP driver that is the difference between ~1 minute and ~1 hour for the
-// full ~20k-card catalog (final-review requirement before the first live run).
+// Batched: 1 DB round trip per 250-card page. Over the Neon HTTP driver that
+// is the difference between ~1 minute and ~1 hour for the full ~20k-card
+// catalog (final-review requirement before the first live run).
 const identityKey = (r: { setName: string | null; cardNumber: string | null | undefined; name: string }) =>
   `${r.setName ?? ""}|${r.cardNumber ?? ""}|${r.name}`;
 

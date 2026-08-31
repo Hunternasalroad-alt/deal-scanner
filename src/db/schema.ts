@@ -61,9 +61,12 @@ export const listings = pgTable("listings", {
   // endpoint; null means never probed. Nullable, no default — most listings (all
   // auctions, and BINs not yet reached by that sweep) never get a value.
   lastProbedAt: timestamp("last_probed_at", { withTimezone: true }),
-  // Floor-rule score (M2 Task 5), written once at ingest for high/medium-confidence
-  // matched listings only — see reference.ts's scoreListing. Nullable: most listings
-  // (low confidence, unmatched, or no usable reference basis) never get a value.
+  // spec §15 hierarchy score (comp median when present, else the live peer-ask
+  // floor) — see reference.ts's scoreListing. Written at ingest for
+  // high/medium-confidence matched listings, then kept current by the nightly
+  // re-score (rescoreActiveListings) as comps and peer floors move. Nullable:
+  // most listings (low confidence, unmatched, or no usable reference basis)
+  // never get a value.
   scoreBps: integer("score_bps"),
   // "raw_floor" is legacy (M2, retired by spec §15): never written after M2.5,
   // still readable on rows the nightly re-score hasn't reached yet.

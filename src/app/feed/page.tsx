@@ -22,7 +22,7 @@ export default async function FeedPage() {
     .leftJoin(referencePrices, and(
       eq(referencePrices.cardId, listings.cardId),
       eq(referencePrices.grader, listings.grader),
-      eq(referencePrices.grade, listings.grade),
+      eq(referencePrices.grade, sql`coalesce(${listings.grade}, '')`),
     ))
     .where(and(isNull(listings.dropReason), eq(listings.status, "active"))).orderBy(sql`${listings.scoreBps} desc nulls last`, desc(listings.firstSeen)).limit(100);
 

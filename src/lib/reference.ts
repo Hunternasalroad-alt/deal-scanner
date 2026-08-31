@@ -65,6 +65,12 @@ export type PeerAsk = { ebayItemId: string; totalCents: number };
 export const peerKey = (cardId: number, grader: string, grade: string | null) =>
   `${cardId}|${grader}|${grade ?? ""}`;
 
+// Final-review ruling: BIN status hygiene is deferred to M3's bulk-expiry
+// sweep, so "active" accumulates listings that actually sold or lapsed —
+// and sold-cheap ghosts would anchor peer floors downward forever. Until
+// expiry exists, only recently-listed copies define a floor.
+const PEER_MAX_AGE_MS = 14 * 86400_000;
+
 export async function collectPeerAsks(db: Db, cardIds: number[]): Promise<Map<string, PeerAsk[]>> {
   if (cardIds.length === 0) return new Map();
   const rows = await db
@@ -79,6 +85,7 @@ export async function collectPeerAsks(db: Db, cardIds: number[]): Promise<Map<st
       inArray(listings.matchConfidence, ["high", "medium"]),
       inArray(listings.cardId, cardIds),
       isNotNull(listings.grader),
+      gte(listings.firstSeen, new Date(Date.now() - PEER_MAX_AGE_MS)),
     ));
   const map = new Map<string, PeerAsk[]>();
   for (const r of rows) {
@@ -102,6 +109,12 @@ export function peerFloorCents(asks: PeerAsk[] | undefined, selfId: string): num
 // spec §15 hierarchy: comp median (real observed sales) when present, else the
 // live peer-ask floor, else unscored. scoreBps is basis points (score * 10000);
 // negative values mean priced above the reference — valid, not an error.
+// scoreBps is an int4 column; an absurd ratio (a 99-cent troll floor under a
+// $500k fantasy ask) must clamp, not overflow the column and wedge the
+// ingest/rescore write forever. The useful range is ±10,000 bps anyway.
+const SCORE_BPS_CLAMP = 10_000_000;
+const clampBps = (bps: number) => Math.max(-SCORE_BPS_CLAMP, Math.min(SCORE_BPS_CLAMP, bps));
+
 export function scoreListing(input: {
   totalCents: number;
   compMedianCents?: number | null;
@@ -109,9 +122,9 @@ export function scoreListing(input: {
 }): { scoreBps: number; scoreBasis: "comp_median" | "peer_floor" } | null {
   const { totalCents, compMedianCents, peerFloorCents: floor } = input;
   if (compMedianCents != null && compMedianCents > 0)
-    return { scoreBps: Math.round((1 - totalCents / compMedianCents) * 10000), scoreBasis: "comp_median" };
+    return { scoreBps: clampBps(Math.round((1 - totalCents / compMedianCents) * 10000)), scoreBasis: "comp_median" };
   if (floor != null && floor > 0)
-    return { scoreBps: Math.round((1 - totalCents / floor) * 10000), scoreBasis: "peer_floor" };
+    return { scoreBps: clampBps(Math.round((1 - totalCents / floor) * 10000)), scoreBasis: "peer_floor" };
   return null;
 }
 
