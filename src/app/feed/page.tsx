@@ -25,7 +25,7 @@ export default async function FeedPage() {
       eq(referencePrices.grade, listings.grade),
     ))
     .leftJoin(rawPrices, eq(rawPrices.cardId, listings.cardId))
-    .where(isNull(listings.dropReason)).orderBy(sql`${listings.scoreBps} desc nulls last`, desc(listings.firstSeen)).limit(100);
+    .where(and(isNull(listings.dropReason), eq(listings.status, "active"))).orderBy(sql`${listings.scoreBps} desc nulls last`, desc(listings.firstSeen)).limit(100);
 
   // Observed-sale metrics (from comps — real closes/disappearances), separate from
   // the comp-median reference joined above. One extra query scoped to just the

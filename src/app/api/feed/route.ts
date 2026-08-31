@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { desc, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { cards, listings } from "@/db/schema";
 
@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
     })
     .from(listings)
     .leftJoin(cards, eq(listings.cardId, cards.id))
-    .where(isNull(listings.dropReason))
+    .where(and(isNull(listings.dropReason), eq(listings.status, "active")))
     .orderBy(sql`${listings.scoreBps} desc nulls last`, desc(listings.firstSeen))
     .limit(limit);
   return NextResponse.json(rows);
