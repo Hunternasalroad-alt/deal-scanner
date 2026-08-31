@@ -57,19 +57,22 @@ Shows last 100 matched listings with card name, title, slab details, price, and 
 - Positive score = the listing is *underpriced* (below the reference; desirable)
 - Score formula: `Score = (reference − (price + shipping)) / reference × 100%` — positive = under reference
 
-**Reference eligibility:** A reference price appears once any (card, grader, grade) accumulates:
-- **3+ comps in the last 30 days**, *or*
-- **A raw-price floor** (the lowest recorded BIN from `bin_disappeared` sweeps) on grades 9, 9.5, or 10 only
+**Reference hierarchy (spec §15):** A reference price is determined as follows for each (card, grader, grade):
+1. **Comp median** (preferred): median of 3+ observed sales in the last 30 days
+2. **Peer floor** (fallback): lowest live BIN ask including shipping among ≥2 other copies of the same card+grader+grade at high/medium match confidence
+3. **Unscored**: if neither condition is met, the listing receives no score
+
+Scores are recalculated nightly to keep reference prices current as new sales and live listings accumulate.
 
 **No alerts exist yet — M3 adds Telegram/email; this milestone only measures.** M2 records comps and scores; M3 will add alert rules and delivery channels (instant Telegram alerts + daily email digests).
 
-**Weekly sync:** The reference card database (grades and images from PokemonTCG.io) must be kept current:
+**Catalog sync:** The reference card database (identification catalog from PokemonTCG.io) must be kept current:
 
 ```bash
 pnpm sync:pokemon
 ```
 
-Run this manually once per week (M3 will automate it). It populates the reference database so new cards can be scored as soon as they appear in listings.
+Run this manually around new Pokémon set releases (~monthly). The sync is catalog-only — it upserts cards for matching and never fetches or stores prices. `POKEMONTCG_API_KEY` is required.
 
 ## Manual comps (Fanatics Collect etc.)
 

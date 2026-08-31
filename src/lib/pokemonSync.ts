@@ -1,6 +1,9 @@
+// Pokémon catalog sync: fetches and upserts cards from pokemontcg.io (spec §15.5).
+// Catalog-only — prices are never fetched or stored; valuation uses live eBay comps.
+
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { cards, rawPrices } from "@/db/schema";
+import { cards } from "@/db/schema";
 import type { Db } from "@/db/client";
 
 const pokeCardSchema = z.object({
@@ -10,9 +13,6 @@ const pokeCardSchema = z.object({
   // null/missing number is valid input, normalized to '' at the insert site below.
   number: z.string().nullish(),
   set: z.object({ name: z.string(), releaseDate: z.string().optional() }),
-  tcgplayer: z
-    .object({ prices: z.record(z.string(), z.object({ market: z.number().nullish() })).optional() })
-    .optional(),
 });
 
 const pokePageSchema = z.object({ data: z.array(pokeCardSchema) });
@@ -42,15 +42,6 @@ function parsePokePage(raw: unknown, page: number): PokeApiCard[] {
   );
 }
 
-function bestMarketCents(c: PokeApiCard): number | null {
-  const variants = Object.values(c.tcgplayer?.prices ?? {});
-  const markets = variants
-    .map((v) => v.market)
-    .filter((m): m is number => typeof m === "number");
-  if (markets.length === 0) return null;
-  return Math.round(Math.max(...markets) * 100);
-}
-
 // Batched: 2 DB round trips per 250-card page instead of 1-2 per card. Over the
 // Neon HTTP driver that is the difference between ~1 minute and ~1 hour for the
 // full ~20k-card catalog (final-review requirement before the first live run).
@@ -58,7 +49,7 @@ const identityKey = (r: { setName: string | null; cardNumber: string | null | un
   `${r.setName ?? ""}|${r.cardNumber ?? ""}|${r.name}`;
 
 export async function syncPokemonPage(db: Db, page: PokeApiCard[]) {
-  if (page.length === 0) return { upsertedCards: 0, pricedCards: 0 };
+  if (page.length === 0) return { upsertedCards: 0 };
 
   // Dedupe within the page by identity key: two rows hitting the same index key
   // in one multi-row upsert make Postgres error ("cannot affect row a second time").
@@ -88,25 +79,7 @@ export async function syncPokemonPage(db: Db, page: PokeApiCard[]) {
     // typecheck here even though both drivers support it individually.
     .returning();
 
-  const idByKey = new Map(inserted.map((r) => [identityKey(r), r.id]));
-  const now = new Date();
-  const priceRows = unique.flatMap((c) => {
-    const cents = bestMarketCents(c);
-    const cardId = idByKey.get(identityKey({ setName: c.set.name, cardNumber: c.number, name: c.name }));
-    return cents !== null && cardId !== undefined
-      ? [{ cardId, marketCents: cents, source: "pokemontcgio", asOf: now }]
-      : [];
-  });
-  if (priceRows.length > 0)
-    await db
-      .insert(rawPrices)
-      .values(priceRows)
-      .onConflictDoUpdate({
-        target: [rawPrices.cardId, rawPrices.source],
-        set: { marketCents: sql`excluded.market_cents`, asOf: sql`excluded.as_of` },
-      });
-
-  return { upsertedCards: inserted.length, pricedCards: priceRows.length };
+  return { upsertedCards: inserted.length };
 }
 
 // ~80 pages exist today; hard ceiling so an API paging bug can't spin the
@@ -146,7 +119,7 @@ export async function runPokemonSync(
     if (pageNum > MAX_SYNC_PAGES)
       throw new Error(`pokemontcg.io sync exceeded ${MAX_SYNC_PAGES} pages — aborting (possible API paging bug)`);
     const res = await fetchWithRetry(
-      `https://api.pokemontcg.io/v2/cards?page=${pageNum}&pageSize=250&select=id,name,number,set,tcgplayer`,
+      `https://api.pokemontcg.io/v2/cards?page=${pageNum}&pageSize=250&select=id,name,number,set`,
       env.POKEMONTCG_API_KEY,
       fetchImpl,
     );

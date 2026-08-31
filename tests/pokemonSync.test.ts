@@ -9,12 +9,11 @@ describe("syncPokemonPage", () => {
     const { db } = await makeTestDb();
     const first = await syncPokemonPage(db, page as never);
     expect(first.upsertedCards).toBe(3);
-    expect(first.pricedCards).toBe(2);
     const again = await syncPokemonPage(db, page as never);
     expect(again.upsertedCards).toBe(3); // upsert, not duplicate
     expect(await db.select().from(cards)).toHaveLength(3);
     const prices = await db.select().from(rawPrices);
-    expect(prices.find((p) => p.marketCents === 149924)).toBeTruthy();
+    expect(prices).toEqual([]); // spec §15.5: the sync never writes prices
   });
 
   it("normalizes a null cardNumber to '' so the identity index dedupes it", async () => {
@@ -29,9 +28,8 @@ describe("syncPokemonPage", () => {
     const cardRows = await db.select().from(cards);
     expect(cardRows).toHaveLength(1);
     expect(cardRows[0].cardNumber).toBe("");
-    const priceRows = await db.select().from(rawPrices);
-    expect(priceRows).toHaveLength(1);
-    expect(priceRows[0].marketCents).toBe(1234);
+    const prices = await db.select().from(rawPrices);
+    expect(prices).toEqual([]); // spec §15.5: the sync never writes prices
   });
 
   it("aborts if the API pages forever", async () => {
