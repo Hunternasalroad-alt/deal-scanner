@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { makeTestDb } from "./helpers/testDb";
 import { matchListing } from "@/lib/match";
 import { cards } from "@/db/schema";
@@ -52,6 +53,24 @@ describe("matchListing", () => {
     const { db } = await makeTestDb();
     const r = await matchListing(db, "baseball", acc({ nameTokens: ["Griffey"] }));
     expect(r).toMatchObject({ confidence: "low", cardId: null, createdCard: false });
+  });
+
+  it("sports: two-letter player-name tokens survive (CJ Stroud, Bo Nix)", async () => {
+    const { db } = await makeTestDb();
+    const n = acc({ nameTokens: ["CJ", "Stroud", "PSA"], cardNumberHint: "150", yearHint: 2023 });
+    const r = await matchListing(db, "football", n);
+    expect(r.createdCard).toBe(true);
+    const [card] = await db.select().from(cards).where(eq(cards.game, "football"));
+    expect(card.name).toBe("Cj Stroud"); // titleCase of both tokens — 2-letter token kept
+  });
+
+  it("sports: never creates a card with an empty name", async () => {
+    const { db } = await makeTestDb();
+    // every token is stoplisted or numeric → no usable name material
+    const n = acc({ nameTokens: ["PSA", "2023", "Graded", "Mint"], cardNumberHint: "77", yearHint: 2023 });
+    const r = await matchListing(db, "baseball", n);
+    expect(r).toEqual({ cardId: null, confidence: "low", createdCard: false });
+    expect(await db.select().from(cards)).toEqual([]);
   });
 
   it("matches the real Sawsbuck soak title despite junk tokens", async () => {

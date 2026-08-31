@@ -22,6 +22,12 @@ const STOP_TOKENS = new Set([
 ]);
 const usableTokens = (tokens: string[]) =>
   tokens.filter((t) => t.length > 2 && !STOP_TOKENS.has(t.toLowerCase()) && !/^\d+$/.test(t));
+// spec §16.5b: player names legitimately carry two-letter tokens (CJ, Bo, Ja) —
+// the general len>2 filter is for junk-token suppression in POKEMON name
+// matching and must not erase them from sports card names. Digits and
+// stoplisted hobby words still go.
+const sportsNameTokens = (tokens: string[]) =>
+  tokens.filter((t) => t.length >= 2 && !STOP_TOKENS.has(t.toLowerCase()) && !/^\d+$/.test(t));
 const nameWords = (name: string) => new Set(name.toLowerCase().split(/[\s.,'&-]+/).filter(Boolean));
 
 export async function matchListing(db: Db, game: Game, n: Accepted): Promise<MatchResult> {
@@ -50,7 +56,11 @@ export async function matchListing(db: Db, game: Game, n: Accepted): Promise<Mat
 
   // sports
   if (yearHint && cardNumberHint && nameTokens.length >= 2) {
-    const name = usableTokens(nameTokens).map(titleCase).join(" ");
+    const nameParts = sportsNameTokens(nameTokens);
+    // spec §16.5a: no usable name material → never insert an empty-name card;
+    // the listing stores as low-confidence unmatched like any other.
+    if (nameParts.length === 0) return { cardId: null, confidence: "low", createdCard: false };
+    const name = nameParts.map(titleCase).join(" ");
     const existing = await db
       .select().from(cards)
       .where(and(eq(cards.game, game), eq(cards.year, yearHint), eq(cards.cardNumber, cardNumberHint), eq(cards.name, name)));
