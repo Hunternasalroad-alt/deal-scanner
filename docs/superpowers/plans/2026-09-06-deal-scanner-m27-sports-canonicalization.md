@@ -40,7 +40,7 @@
 **Interfaces:**
 - Produces (exact):
   - `type SportsIdentity = { year: number | null; set: string; cardNumber: string; player: string; variant: string }`
-  - `parseSportsTitle(title: string): SportsIdentity | null` — null when no player or no card number survives.
+  - `parseSportsTitle(title: string): SportsIdentity | null` — null when no player or no card number survives. `variant` lists parallel/insert terms in canonical (case-insensitive sorted) order with the serial `/N` last, so word order in titles never forks an identity.
   - `canonicalSet(text: string): string` — maps free text like "prizm" / "Panini Prizm" / "PANINI PRIZM" to the canonical phrase (`"Panini Prizm"`); unknown text is title-cased as-is.
   - `canonicalPlayer(text: string): string` — the same name normalization the parser applies (title-case preserving apostrophes/hyphens, e.g. `"shaquille o'neal"` → `"Shaquille O'Neal"`).
   - `setLabel(year: number | null, set: string): string` — `"2019 Panini Prizm"`, or `"2019"` when set is empty, or the set alone when year is null.
@@ -64,9 +64,9 @@ const corpus: [string, Exp][] = [
   ["1992 Topps Stadium Club Shaquille O'Neal PSA 10 RC Magic #247",
     { year: 1992, set: "Topps Stadium Club", cardNumber: "247", player: "Shaquille O'Neal", variant: "" }],
   ["2019-20 Panini Select Concourse Silver Prizm Shai Gilgeous-Alexander #81 PSA 9",
-    { year: 2019, set: "Panini Select", cardNumber: "81", player: "Shai Gilgeous-Alexander", variant: "Concourse Silver Prizm" }],
+    { year: 2019, set: "Panini Select", cardNumber: "81", player: "Shai Gilgeous-Alexander", variant: "Concourse Prizm Silver" }],
   ["2022 Panini Prizm Amon-Ra St. Brown #98 Red Sparkle BGS 9.5",
-    { year: 2022, set: "Panini Prizm", cardNumber: "98", player: "Amon-Ra St. Brown", variant: "Red Sparkle" }],
+    { year: 2022, set: "Panini Prizm", cardNumber: "98", player: "Amon-Ra St Brown", variant: "Red Sparkle" }],
   ["STEPHEN CURRY PSA 10 2024 PANINI PRIZM BLACK #7 COLOR BLAST WARRIORS SP GEM 6625",
     { year: 2024, set: "Panini Prizm", cardNumber: "7", player: "Stephen Curry", variant: "Black Color Blast SP" }],
   ["Zion Williamson PSA 10 2019-20 Panini Select #1 Concourse RC Rookie Card",
@@ -84,11 +84,11 @@ const corpus: [string, Exp][] = [
   ["2024 Panini Prizm WNBA Caitlin Clark #22 PSA 10 RC Rookie Card Fever",
     { year: 2024, set: "Panini Prizm", cardNumber: "22", player: "Caitlin Clark", variant: "" }],
   ["2025 PANINI PRIZM WNBA SILVER PRIZM #148 SONIA CITRON SGC 9.5💥",
-    { year: 2025, set: "Panini Prizm", cardNumber: "148", player: "Sonia Citron", variant: "Silver Prizm" }],
+    { year: 2025, set: "Panini Prizm", cardNumber: "148", player: "Sonia Citron", variant: "Prizm Silver" }],
   ["2017 TOPPS CHROME #169 AARON JUDGE ROOKIE RC PSA 10 GEM",
     { year: 2017, set: "Topps Chrome", cardNumber: "169", player: "Aaron Judge", variant: "" }],
   ["1961 Fleer Baseball #126 Iron Man McGinnity PSA 8",
-    { year: 1961, set: "Fleer", cardNumber: "126", player: "Iron Man McGinnity", variant: "" }],
+    { year: 1961, set: "Fleer", cardNumber: "126", player: "Iron Man Mcginnity", variant: "" }],
   ["1970 Topps Willie Mays #600 PSA 6",
     { year: 1970, set: "Topps", cardNumber: "600", player: "Willie Mays", variant: "" }],
   ["1991 Score - Bo Jackson #5 PSA 9 Kansas City Royals Graded Baseball Card",
@@ -346,7 +346,8 @@ export function parseSportsTitle(rawTitle: string): SportsIdentity | null {
 
   // Serial print run: N/M → variant suffix "/M". Never a card number (spec §16.5c heritage).
   let serial: string | null = null;
-  const serialM = /(?:\b|-)(\d{1,4})\s*\/\s*(\d{1,4})\b/.exec(title);
+  // Accepts "101/125", "-101/125", "#48/50" (after the hash consumed "48"), and a bare "/25".
+  const serialM = /(?:\b(\d{1,4})\s*)?\/\s*(\d{1,4})\b/.exec(title);
   if (serialM) { serial = `/${serialM[2]}`; title = title.replace(serialM[0], " "); }
 
   // Tokenize: keep letters, digits, apostrophes, hyphens, periods, ampersands.
@@ -397,7 +398,10 @@ export function parseSportsTitle(rawTitle: string): SportsIdentity | null {
     if (SUFFIXES.has(b) || PARTICLES.has(a)) nameTokens = run.slice(-3);
   }
 
-  const variant = [...variantParts, ...(serial ? [serial] : [])].join(" ").trim();
+  // Canonical order: parallel/insert terms sorted case-insensitively, serial last —
+  // "Silver Prizm Concourse" and "Concourse Silver Prizm" must be one identity.
+  const sortedParts = [...new Set(variantParts)].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  const variant = [...sortedParts, ...(serial ? [serial] : [])].join(" ").trim();
   return { year, set, cardNumber, player: canonicalPlayer(nameTokens.join(" ")), variant };
 }
 ```
@@ -449,7 +453,7 @@ Replace the six existing `sports:` tests (creates-on-first-sight, LOW-without-ye
     const b = await matchListing(db, "basketball", acc({}, "Shai Gilgeous-Alexander 2019 Select #81 Silver Prizm Concourse Thunder PSA 10 RC"));
     expect(b.confidence).toBe("high"); expect(b.cardId).toBe(a.cardId); expect(b.createdCard).toBe(false);
     const [card] = await db.select().from(cards).where(eq(cards.id, a.cardId!));
-    expect(card).toMatchObject({ game: "basketball", setName: "2019 Panini Select", cardNumber: "81", name: "Shai Gilgeous-Alexander", variant: "Concourse Silver Prizm", year: 2019 });
+    expect(card).toMatchObject({ game: "basketball", setName: "2019 Panini Select", cardNumber: "81", name: "Shai Gilgeous-Alexander", variant: "Concourse Prizm Silver", year: 2019 });
   });
 
   it("sports: base and parallel are different cards", async () => {
