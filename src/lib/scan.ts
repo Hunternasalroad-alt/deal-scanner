@@ -137,7 +137,7 @@ export async function runScanTick(
             const rawCents = Number(item.price?.value);
             // spec §16.1: drops are stored rawless — the row exists only to dedupe re-fetches and feed dropReason observability.
             droppedRows.push({
-              ebayItemId: item.itemId, title: item.title, categoryId: q.categoryId,
+              ebayItemId: item.itemId, title: item.title, categoryId: q.categoryId, game: q.game,
               // NaN guard: a malformed price string must not poison the insert and 500 the tick
               priceCents: Number.isFinite(rawCents) ? Math.round(rawCents * 100) : 0,
               listingType: item.buyingOptions.includes("AUCTION") ? "auction" : "bin",
@@ -176,7 +176,7 @@ export async function runScanTick(
           }
 
           await db.insert(listings).values({
-            ebayItemId: item.itemId, title: item.title, categoryId: q.categoryId,
+            ebayItemId: item.itemId, title: item.title, categoryId: q.categoryId, game: q.game,
             cardId: m.cardId, matchConfidence: m.confidence,
             grader: n.grader, grade: n.grade, certNumber: n.certNumber,
             priceCents: n.priceCents, shippingCents: n.shippingCents, listingType: n.listingType,

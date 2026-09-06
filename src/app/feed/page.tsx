@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { cards, comps, listings, referencePrices } from "@/db/schema";
 import { collectPeerAsks, peerFloorCents, peerKey } from "@/lib/reference";
@@ -6,7 +6,18 @@ import { saleMetrics, type CompPoint, type SaleMetrics } from "@/lib/valuation";
 
 export const dynamic = "force-dynamic";
 
-export default async function FeedPage() {
+const GAMES = ["pokemon", "baseball", "basketball", "football"] as const;
+const LABELS: Record<(typeof GAMES)[number], string> = {
+  pokemon: "Pokémon",
+  baseball: "Baseball",
+  basketball: "Basketball",
+  football: "Football",
+};
+
+export default async function FeedPage({ searchParams }: { searchParams: Promise<{ game?: string }> }) {
+  const { game: gameParam } = await searchParams;
+  const game = GAMES.find((g) => g === gameParam) ?? null;
+
   const itemUrl = (id: string) => `https://www.ebay.com/itm/${id.split("|")[1] ?? id}`;
   const displayValue = (r: { id: string; cardId: number | null; grader: string | null; grade: string | null; refValueCents: number | null }) => {
     if (r.refValueCents != null && r.refValueCents > 0) return { cents: r.refValueCents, basis: "comps" };
@@ -16,6 +27,8 @@ export default async function FeedPage() {
     return null;
   };
   const db = getDb();
+  const feedWhere = [isNull(listings.dropReason), eq(listings.status, "active")];
+  if (game) feedWhere.push(eq(listings.game, game));
   const rows = await db
     .select({ id: listings.ebayItemId, title: listings.title, grader: listings.grader, grade: listings.grade, price: listings.priceCents, conf: listings.matchConfidence, cardId: listings.cardId, card: cards.name, scoreBps: listings.scoreBps, scoreBasis: listings.scoreBasis, refValueCents: referencePrices.valueCents })
     .from(listings).leftJoin(cards, eq(listings.cardId, cards.id))
@@ -24,7 +37,24 @@ export default async function FeedPage() {
       eq(referencePrices.grader, listings.grader),
       eq(referencePrices.grade, sql`coalesce(${listings.grade}, '')`),
     ))
-    .where(and(isNull(listings.dropReason), eq(listings.status, "active"))).orderBy(sql`${listings.scoreBps} desc nulls last`, desc(listings.firstSeen)).limit(100);
+    .where(and(...feedWhere)).orderBy(sql`${listings.scoreBps} desc nulls last`, desc(listings.firstSeen)).limit(100);
+
+  // Filter-bar counts (per-game feed filter): grouped over the same base
+  // predicate as the feed query above but without the `game` filter itself,
+  // so every nav link shows its own total regardless of which one is active.
+  // Rows with game === null (listings ingested before this column existed)
+  // fall into no per-game bucket and count toward All only.
+  const gameCounts = await db
+    .select({ game: listings.game, n: count() })
+    .from(listings)
+    .where(and(isNull(listings.dropReason), eq(listings.status, "active")))
+    .groupBy(listings.game);
+  const countFor = (g: (typeof GAMES)[number]) => Number(gameCounts.find((r) => r.game === g)?.n ?? 0);
+  const totalCount = gameCounts.reduce((sum, r) => sum + Number(r.n), 0);
+  const navItems = [
+    { label: "All", href: "/feed", active: game === null, n: totalCount },
+    ...GAMES.map((g) => ({ label: LABELS[g], href: `/feed?game=${g}`, active: game === g, n: countFor(g) })),
+  ];
 
   // Observed-sale metrics (from comps — real closes/disappearances), separate from
   // the comp-median reference joined above. One extra query scoped to just the
@@ -52,7 +82,15 @@ export default async function FeedPage() {
 
   return (
     <main style={{ fontFamily: "ui-monospace, monospace", padding: 24 }}>
-      <h1>Deal feed ({rows.length})</h1>
+      <h1>Deal feed ({rows.length}){game ? ` — ${LABELS[game]}` : ""}</h1>
+      <p>
+        {navItems.map((item, i) => (
+          <span key={item.href}>
+            {i > 0 ? " · " : ""}
+            {item.active ? <strong>{item.label} ({item.n})</strong> : <a href={item.href}>{item.label} ({item.n})</a>}
+          </span>
+        ))}
+      </p>
       <table cellPadding={6}>
         <thead><tr><th align="left">Card</th><th align="left">Title</th><th>Slab</th><th align="right">Price</th><th align="right">Value</th><th align="right">Last Sale</th><th align="right">Avg (3)</th><th align="right">Avg (5)</th><th align="right">Avg 90d</th><th>Match</th><th align="right">Score</th></tr></thead>
         <tbody>

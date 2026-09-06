@@ -57,6 +57,9 @@ describe("runScanTick", () => {
     expect(rows.find((r) => r.ebayItemId === "v1|a|0")?.sellerFeedbackPct).toBe(99);
     expect(rows.find((r) => r.ebayItemId === "v1|a|0")?.sellerFeedbackCount).toBe(412);
     expect((rows.find((r) => r.ebayItemId === "v1|a|0")!.raw as Record<string, unknown>).seller).toBeUndefined();
+    // Both the accepted and dropped paths write the originating query's game (this feature).
+    expect(rows.find((r) => r.ebayItemId === "v1|a|0")?.game).toBe("pokemon");
+    expect(rows.find((r) => r.ebayItemId === "v1|b|0")?.game).toBe("pokemon");
 
     const r2 = await runScanTick(db, { search: search as never, detail: detail as never });
     expect(await db.select().from(listings)).toHaveLength(2); // no dupes

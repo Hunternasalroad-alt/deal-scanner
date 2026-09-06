@@ -52,6 +52,10 @@ export const listings = pgTable("listings", {
   sellerFeedbackCount: integer("seller_feedback_count"),
   status: text("status", { enum: ["active", "ended", "sold_probable"] }).notNull().default("active"),
   categoryId: text("category_id").notNull(),
+  // Which query the listing came from (spec §16.4: sports share one eBay category,
+  // so category alone can't say which sport). Nullable: rows ingested before this
+  // column existed are backfilled from cards.game where matched, else stay null.
+  game: text("game", { enum: ["pokemon", "baseball", "basketball", "football"] }),
   title: text("title").notNull(),
   detailFetched: boolean("detail_fetched").notNull().default(false),
   dropReason: text("drop_reason"),
