@@ -67,6 +67,16 @@ const corpus: [string, Exp][] = [
     { year: 2022, set: "Panini Origins", cardNumber: "21", player: "Anthony Edwards", variant: "Orange /75" }],
   ["1981 Kellogg's 3-D Super Stars Pete Rose #63 PSA 8 1c0k",
     { year: 1981, set: "Kellogg's", cardNumber: "63", player: "Pete Rose", variant: "" }],
+  ["2023 Panini Prizm Draymond Green #123 Silver Prizm PSA 10 Warriors",
+    { year: 2023, set: "Panini Prizm", cardNumber: "123", player: "Draymond Green", variant: "Prizm Silver" }],
+  ["1990 Fleer Magic Johnson #63 PSA 9 Lakers",
+    { year: 1990, set: "Fleer", cardNumber: "63", player: "Magic Johnson", variant: "" }],
+  ["2018 Panini Prizm Case Keenum #45 PSA 10 Vikings",
+    { year: 2018, set: "Panini Prizm", cardNumber: "45", player: "Case Keenum", variant: "" }],
+  ["2002-03 Upper Deck Allan Houston #58 PSA 9 Knicks",
+    { year: 2002, set: "Upper Deck", cardNumber: "58", player: "Allan Houston", variant: "" }],
+  ["2024 Topps Chrome Jazz Chisholm Jr #100 PSA 10 Marlins",
+    { year: 2024, set: "Topps Chrome", cardNumber: "100", player: "Jazz Chisholm Jr", variant: "" }],
 ];
 
 describe("parseSportsTitle corpus", () => {

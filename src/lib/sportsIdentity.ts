@@ -130,6 +130,25 @@ const JUNK = new Set([
 const SUFFIXES = new Set(["jr", "jr.", "sr", "sr.", "ii", "iii", "iv"]);
 const PARTICLES = new Set(["st.", "st", "de", "la", "van", "von", "del", "da", "di", "le", "mc"]);
 
+// §17.7 accepted limitation, made explicit: VARIANT_PHRASES (color words like
+// "white"/"green") and TEAM_PHRASES/JUNK (team nicknames and words like
+// "magic"/"case") silently amputate real player names that happen to contain
+// them — "Devin White" -> "Devin", "Magic Johnson" -> "Johnson", "Case Keenum"
+// -> "Keenum". This is a curated allow-list of the collisions we know about,
+// not a general fix: an unlisted color- or team-named player still fragments.
+// Two-token lowercase names, normalized the same way the tokenizer normalizes
+// every other token (lowercased; a leading/trailing "-"/"." stripped) — which
+// is why "A.J. Green" needs its own "a.j green" entry alongside the
+// literal-but-untokenizable "a.j. green".
+const PROTECTED_PLAYERS = new Set([
+  "draymond green", "danny green", "jalen green", "jeff green", "aj green", "a.j. green", "a.j green",
+  "devin white", "reggie white", "randy white",
+  "magic johnson", "case keenum", "jazz chisholm",
+  "dallas goedert", "dallas keuchel",
+  "allan houston", "orlando cepeda", "boston scott",
+  "vida blue", "red grange", "red schoendienst",
+]);
+
 // --- Helpers ----------------------------------------------------------------
 const titleCaseWord = (w: string) =>
   w.toLowerCase().replace(/(^|['-])([a-z])/g, (_, sep: string, ch: string) => sep + ch.toUpperCase());
@@ -149,7 +168,7 @@ function matchPhrase(tokens: string[], i: number, dict: Record<string, string> |
   for (let len = Math.min(maxLen, tokens.length - i); len >= 1; len--) {
     const phrase = tokens.slice(i, i + len).join(" ");
     if (dict instanceof Set) { if (dict.has(phrase)) return [len, phrase]; }
-    else if (phrase in dict) return [len, dict[phrase]];
+    else if (Object.hasOwn(dict, phrase)) return [len, dict[phrase]];
   }
   return null;
 }
@@ -182,11 +201,21 @@ export function parseSportsTitle(rawTitle: string): SportsIdentity | null {
   const rawTokens = title.replace(/[^A-Za-z0-9'\-.&\s]/g, " ").split(/\s+/).filter(Boolean);
   const tokens = rawTokens.map((t) => t.toLowerCase().replace(/^[-.]+|[-.]+$/g, "")).filter(Boolean);
 
+  // §17.7: mark both positions of any adjacent pair that is a known
+  // player-name/dictionary collision (see PROTECTED_PLAYERS) before
+  // classification runs, so those tokens can be routed straight to residue
+  // regardless of which dictionary would otherwise have claimed them.
+  const protectedPositions = new Set<number>();
+  for (let i = 0; i < tokens.length - 1; i++) {
+    if (PROTECTED_PLAYERS.has(`${tokens[i]} ${tokens[i + 1]}`)) { protectedPositions.add(i); protectedPositions.add(i + 1); }
+  }
+
   let set = "";
   const variantParts: string[] = [];
   const residue: { tok: string; pos: number }[] = [];
 
   for (let i = 0; i < tokens.length; ) {
+    if (protectedPositions.has(i)) { residue.push({ tok: tokens[i], pos: i }); i++; continue; }
     const setHit = set === "" ? matchPhrase(tokens, i, SET_PHRASES) : null;
     if (setHit) { set = setHit[1]; i += setHit[0]; continue; }
     const varHit = matchPhrase(tokens, i, VARIANT_PHRASES);
