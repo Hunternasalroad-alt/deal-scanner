@@ -9,6 +9,10 @@
 const GAMES = ["pokemon", "baseball", "basketball", "football"] as const;
 type Game = (typeof GAMES)[number];
 const isGame = (v: string): v is Game => (GAMES as readonly string[]).includes(v);
+// I6: sports rows (unlike pokemon) have no upstream catalog to fall back on —
+// set_name and year are the only thing standing between a manual comp and a
+// silently-forked duplicate card, so both are mandatory for these games.
+const SPORTS_GAMES = new Set<Game>(["baseball", "basketball", "football"]);
 
 const GRADERS = ["PSA", "BGS", "SGC"] as const;
 type Grader = (typeof GRADERS)[number];
@@ -165,6 +169,10 @@ export function parseManualCompCsv(
       errors.push({ line, message: "set_name is required for pokemon rows" });
       continue;
     }
+    if (SPORTS_GAMES.has(gameRaw) && !setName) {
+      errors.push({ line, message: "set_name is required for sports rows" });
+      continue;
+    }
     if (!cardNumber) {
       errors.push({ line, message: "card_number is required" });
       continue;
@@ -184,7 +192,12 @@ export function parseManualCompCsv(
 
     const yearRaw = cell("year");
     let year: number | null = null;
-    if (yearRaw) {
+    if (!yearRaw) {
+      if (SPORTS_GAMES.has(gameRaw)) {
+        errors.push({ line, message: "year is required for sports rows" });
+        continue;
+      }
+    } else {
       const y = Number(yearRaw);
       if (!Number.isInteger(y)) {
         errors.push({ line, message: `year "${yearRaw}" must be a whole number` });

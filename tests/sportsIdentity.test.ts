@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canonicalPlayer, canonicalSet, parseSportsTitle, setLabel } from "@/lib/sportsIdentity";
+import { canonicalCardNumber, canonicalPlayer, canonicalSet, canonicalVariant, parseSportsTitle, setLabel } from "@/lib/sportsIdentity";
 
 type Exp = { year: number | null; set: string; cardNumber: string; player: string; variant: string };
 const corpus: [string, Exp][] = [
@@ -77,6 +77,22 @@ const corpus: [string, Exp][] = [
     { year: 2002, set: "Upper Deck", cardNumber: "58", player: "Allan Houston", variant: "" }],
   ["2024 Topps Chrome Jazz Chisholm Jr #100 PSA 10 Marlins",
     { year: 2024, set: "Topps Chrome", cardNumber: "100", player: "Jazz Chisholm Jr", variant: "" }],
+  ["2025 Panini Prizm Draft Picks Cam Ward #17 Black PSA 10",
+    { year: 2025, set: "Panini Prizm Draft Picks", cardNumber: "17", player: "Cam Ward", variant: "Black" }],
+  ["2018 Contenders Draft Picks Aaron Holiday #83 PSA 9",
+    { year: 2018, set: "Panini Contenders Draft Picks", cardNumber: "83", player: "Aaron Holiday", variant: "" }],
+  ["2020-21 Panini NBA Hoops Yellow Anthony Edwards #216 PSA 10",
+    { year: 2020, set: "NBA Hoops", cardNumber: "216", player: "Anthony Edwards", variant: "Yellow" }],
+  ["2025 Topps Chrome Tyler Shough #98 Green Lava /99 PSA 10",
+    { year: 2025, set: "Topps Chrome", cardNumber: "98", player: "Tyler Shough", variant: "Green Lava /99" }],
+  ["1992 Topps Stadium Club Shaquille O’Neal PSA 10 RC Magic #247",
+    { year: 1992, set: "Topps Stadium Club", cardNumber: "247", player: "Shaquille O'Neal", variant: "" }],
+  ["2024 Topps Series 1 Gunnar Henderson 100 PSA 10",
+    { year: 2024, set: "Topps", cardNumber: "100", player: "Gunnar Henderson", variant: "" }],
+  ["2023-2024 Panini Prizm Victor Wembanyama #136 PSA 10",
+    { year: 2023, set: "Panini Prizm", cardNumber: "136", player: "Victor Wembanyama", variant: "" }],
+  ["PSA 3.5 1952 Topps 311 Mickey Mantle",
+    { year: 1952, set: "Topps", cardNumber: "311", player: "Mickey Mantle", variant: "" }],
 ];
 
 describe("parseSportsTitle corpus", () => {
@@ -98,6 +114,12 @@ describe("parseSportsTitle corpus", () => {
     const again = parseSportsTitle(`${p.year} ${p.set} ${p.variant} ${p.player} #${p.cardNumber}`)!;
     expect(again).toEqual(p);
   });
+  it("a grader-descriptor-grade with no other card number rejects rather than leaking the grade digit (I2)", () => {
+    expect(parseSportsTitle("2023 Topps Chrome Julio Rodriguez PSA GEM MT 10")).toBeNull();
+  });
+  it("a grader-descriptor-grade with a hyphenated descriptor rejects the same way (I2)", () => {
+    expect(parseSportsTitle("1975 Topps Robin Yount PSA NM-MT 8")).toBeNull();
+  });
 });
 
 describe("helpers", () => {
@@ -116,5 +138,20 @@ describe("helpers", () => {
     expect(setLabel(2019, "Panini Prizm")).toBe("2019 Panini Prizm");
     expect(setLabel(2019, "")).toBe("2019");
     expect(setLabel(null, "Fleer")).toBe("Fleer");
+  });
+  it("canonicalVariant matches VARIANT_PHRASES longest-first and sorts the result", () => {
+    expect(canonicalVariant("silver prizm")).toBe("Prizm Silver");
+  });
+  it("canonicalVariant appends a serial suffix when present", () => {
+    expect(canonicalVariant("signed /25")).toBe("Auto /25");
+  });
+  it("canonicalVariant maps a multi-word phrase to its canonical form", () => {
+    expect(canonicalVariant("die cut")).toBe("Die-Cut");
+  });
+  it("canonicalVariant returns empty for empty input", () => {
+    expect(canonicalVariant("")).toBe("");
+  });
+  it("canonicalCardNumber strips a leading # and uppercases", () => {
+    expect(canonicalCardNumber("#bdc22")).toBe("BDC22");
   });
 });

@@ -46,7 +46,10 @@ describe("reidentifySports", () => {
     const legacy = await seedLegacy(db);
 
     const result = await reidentifySports(db);
-    expect(result).toEqual({ listingsSeen: 2, listingsRepointed: 2, compsRepointed: 1, cardsCreated: 1, orphanCardsDeleted: 1, unparsed: 0 });
+    expect(result).toEqual({
+      listingsSeen: 2, listingsRepointed: 2, compsRepointed: 1, cardsCreated: 1, orphanCardsDeleted: 1,
+      unparsed: 0, unresolved: 0, orphanDeleteErrors: 0,
+    });
 
     const rows = await db.select().from(listings);
     expect(rows).toHaveLength(2);
@@ -71,7 +74,10 @@ describe("reidentifySports", () => {
     await reidentifySports(db);
 
     const second = await reidentifySports(db);
-    expect(second).toEqual({ listingsSeen: 2, listingsRepointed: 0, compsRepointed: 0, cardsCreated: 0, orphanCardsDeleted: 0, unparsed: 0 });
+    expect(second).toEqual({
+      listingsSeen: 2, listingsRepointed: 0, compsRepointed: 0, cardsCreated: 0, orphanCardsDeleted: 0,
+      unparsed: 0, unresolved: 0, orphanDeleteErrors: 0,
+    });
   });
 
   it("dry-run reports the same would-do counts but writes nothing", async () => {
@@ -79,7 +85,10 @@ describe("reidentifySports", () => {
     const legacy = await seedLegacy(db);
 
     const result = await reidentifySports(db, { dryRun: true });
-    expect(result).toEqual({ listingsSeen: 2, listingsRepointed: 2, compsRepointed: 1, cardsCreated: 1, orphanCardsDeleted: 0, unparsed: 0 });
+    expect(result).toEqual({
+      listingsSeen: 2, listingsRepointed: 2, compsRepointed: 1, cardsCreated: 1, orphanCardsDeleted: 0,
+      unparsed: 0, unresolved: 0, orphanDeleteErrors: 0,
+    });
 
     expect(await db.select().from(cards)).toHaveLength(1); // no canonical card created
     const rows = await db.select().from(listings);
@@ -106,11 +115,36 @@ describe("reidentifySports", () => {
     });
 
     const result = await reidentifySports(db);
-    expect(result).toEqual({ listingsSeen: 1, listingsRepointed: 0, compsRepointed: 0, cardsCreated: 0, orphanCardsDeleted: 0, unparsed: 1 });
+    expect(result).toEqual({
+      listingsSeen: 1, listingsRepointed: 0, compsRepointed: 0, cardsCreated: 0, orphanCardsDeleted: 0,
+      unparsed: 1, unresolved: 0, orphanDeleteErrors: 0,
+    });
 
     const [listing] = await db.select().from(listings).where(eq(listings.ebayItemId, "U1"));
     expect(listing.cardId).toBeNull();
 
     expect(await db.select().from(cards).where(eq(cards.id, manual.id))).toHaveLength(1);
+  });
+
+  it("orphanIdCeiling excludes a card created after the snapshot from the orphan sweep (I1)", async () => {
+    const { db } = await makeTestDb();
+    const legacy = await seedLegacy(db);
+
+    // An extra unreferenced firehose sports card, standing in for one the
+    // live scan tick (or this very run's card-creation step) inserts after
+    // the ceiling would have been snapshotted in production.
+    const [extra] = await db.insert(cards).values({
+      game: "basketball", setName: "2021", name: "Some Other Player",
+      cardNumber: "1", variant: "", year: 2021, createdFrom: "firehose",
+    }).returning();
+
+    const pinned = await reidentifySports(db, { orphanIdCeiling: extra.id - 1 });
+    expect(pinned.orphanCardsDeleted).toBe(1); // only the legacy card, never `extra`
+    expect(await db.select().from(cards).where(eq(cards.id, extra.id))).toHaveLength(1); // extra survives
+    expect(await db.select().from(cards).where(eq(cards.id, legacy.id))).toEqual([]); // legacy is gone
+
+    const unpinned = await reidentifySports(db);
+    expect(unpinned.orphanCardsDeleted).toBe(1); // now `extra` is swept
+    expect(await db.select().from(cards).where(eq(cards.id, extra.id))).toEqual([]);
   });
 });

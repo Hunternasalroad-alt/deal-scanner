@@ -16,6 +16,8 @@ export type ReidentifyResult = {
   cardsCreated: number;
   orphanCardsDeleted: number;
   unparsed: number;
+  unresolved: number;
+  orphanDeleteErrors: number;
 };
 
 // "|" is a safe delimiter: every field here comes from parseSportsTitle's
@@ -47,9 +49,21 @@ function chunk<T>(items: T[], size: number): T[][] {
 // its listings/comps are compared against `undefined`, which no real row can
 // already equal, so they still count correctly as "would repoint" even
 // though no card is created.
-export async function reidentifySports(db: Db, opts?: { dryRun?: boolean; batchSize?: number }): Promise<ReidentifyResult> {
+export async function reidentifySports(
+  db: Db,
+  opts?: { dryRun?: boolean; batchSize?: number; orphanIdCeiling?: number },
+): Promise<ReidentifyResult> {
   const dryRun = opts?.dryRun ?? false;
   const batchSize = opts?.batchSize ?? 500;
+
+  // I1 (prod-critical): snapshot the orphan-deletion ceiling BEFORE this run
+  // makes any write. Anything created after this point — by the live scan
+  // tick running concurrently, or by this very run's card-creation step
+  // below — carries an id above the ceiling and is excluded from the orphan
+  // sweep at the bottom by construction, never by timing luck. Tests pin
+  // this directly via opts.orphanIdCeiling.
+  const orphanIdCeiling =
+    opts?.orphanIdCeiling ?? Math.max(0, ...(await db.select({ id: cards.id }).from(cards)).map((c) => c.id));
 
   // Scope (spec §17.6): every accepted (non-dropped) sports listing. comps
   // carry no title of their own — they reach one only by joining back to a
@@ -85,7 +99,8 @@ export async function reidentifySports(db: Db, opts?: { dryRun?: boolean; batchS
   // final answer (counted via cardsCreated; nothing written). In a real run
   // it can only survive the insert + re-select below if a concurrent writer
   // raced this one and somehow still isn't visible on re-select — such a
-  // group is left untouched below rather than reported as done.
+  // group is left untouched below rather than reported as done, and counted
+  // in `unresolved`.
   const targetByKey = new Map<string, number | undefined>();
   let cardsCreated = 0;
   for (const batch of chunk(allGroups, batchSize)) {
@@ -123,11 +138,12 @@ export async function reidentifySports(db: Db, opts?: { dryRun?: boolean; batchS
 
   let listingsRepointed = 0;
   let compsRepointed = 0;
+  let unresolved = 0;
   for (const g of allGroups) {
     const target = targetByKey.get(identityKey(g));
 
     if (target === undefined) {
-      if (!dryRun) continue; // unresolved race (see above) — leave this group untouched entirely
+      if (!dryRun) { unresolved++; continue; } // unresolved race (see above) — leave this group untouched entirely
       // Would-create: no real row can already hold an id that doesn't exist,
       // so every listing counts as "would repoint" and every attached comp
       // as "would repoint" too.
@@ -136,9 +152,13 @@ export async function reidentifySports(db: Db, opts?: { dryRun?: boolean; batchS
       continue;
     }
 
-    listingsRepointed += g.listingIds.filter((id) => cardIdByListingId.get(id) !== target).length;
-    compsRepointed += g.listingIds.filter((id) => compCardIdByListingId.has(id) && compCardIdByListingId.get(id) !== target).length;
+    const listingsForGroup = g.listingIds.filter((id) => cardIdByListingId.get(id) !== target).length;
+    const compsForGroup = g.listingIds.filter((id) => compCardIdByListingId.has(id) && compCardIdByListingId.get(id) !== target).length;
+    listingsRepointed += listingsForGroup;
+    compsRepointed += compsForGroup;
     if (dryRun) continue;
+    // M7: nothing would actually change for this group — skip both UPDATEs.
+    if (listingsForGroup === 0 && compsForGroup === 0) continue;
 
     for (const idBatch of chunk(g.listingIds, batchSize)) {
       await db.update(listings).set({ cardId: target, matchConfidence: "high" }).where(inArray(listings.ebayItemId, idBatch));
@@ -146,24 +166,48 @@ export async function reidentifySports(db: Db, opts?: { dryRun?: boolean; batchS
     }
   }
 
-  if (dryRun) return { listingsSeen: rows.length, listingsRepointed, compsRepointed, cardsCreated, orphanCardsDeleted: 0, unparsed };
+  if (dryRun) {
+    return {
+      listingsSeen: rows.length, listingsRepointed, compsRepointed, cardsCreated,
+      orphanCardsDeleted: 0, unparsed, unresolved, orphanDeleteErrors: 0,
+    };
+  }
 
   // Orphans: firehose sports cards with no listing or comp reference left
-  // anywhere. Deliberately table-wide rather than sports-scoped, so a stray
-  // reference from outside this function's usual scope still protects the
-  // card — and avoids a foreign-key violation on the delete below.
+  // anywhere, restricted to cards that already existed at (or before) this
+  // run's snapshot (I1) — a card created during this run, or by a
+  // concurrently-running scan tick, is never a deletion candidate. Deliberately
+  // table-wide rather than sports-scoped, so a stray reference from outside
+  // this function's usual scope still protects the card — and avoids a
+  // foreign-key violation on the delete below.
   const referencedByListings = await db.select({ id: listings.cardId }).from(listings).where(isNotNull(listings.cardId));
   const referencedByComps = await db.select({ id: comps.cardId }).from(comps).where(isNotNull(comps.cardId));
   const referenced = new Set(
     [...referencedByListings, ...referencedByComps].map((r) => r.id).filter((id): id is number => id !== null),
   );
   const sportsCards = await db.select({ id: cards.id, createdFrom: cards.createdFrom }).from(cards).where(inArray(cards.game, [...SPORTS]));
-  const orphanIds = sportsCards.filter((c) => c.createdFrom === "firehose" && !referenced.has(c.id)).map((c) => c.id);
+  const orphanIds = sportsCards
+    .filter((c) => c.createdFrom === "firehose" && c.id <= orphanIdCeiling && !referenced.has(c.id))
+    .map((c) => c.id);
 
+  // I1: an FK failure deleting one chunk (e.g. a concurrent insert referenced
+  // one of these ids after the `referenced` snapshot above) is caught and
+  // counted instead of aborting the whole run — later chunks still get a
+  // chance to delete.
+  let orphanCardsDeleted = 0;
+  let orphanDeleteErrors = 0;
   for (const idBatch of chunk(orphanIds, batchSize)) {
-    await db.delete(referencePrices).where(inArray(referencePrices.cardId, idBatch));
-    await db.delete(cards).where(inArray(cards.id, idBatch));
+    try {
+      await db.delete(referencePrices).where(inArray(referencePrices.cardId, idBatch));
+      await db.delete(cards).where(inArray(cards.id, idBatch));
+      orphanCardsDeleted += idBatch.length;
+    } catch {
+      orphanDeleteErrors++;
+    }
   }
 
-  return { listingsSeen: rows.length, listingsRepointed, compsRepointed, cardsCreated, orphanCardsDeleted: orphanIds.length, unparsed };
+  return {
+    listingsSeen: rows.length, listingsRepointed, compsRepointed, cardsCreated,
+    orphanCardsDeleted, unparsed, unresolved, orphanDeleteErrors,
+  };
 }

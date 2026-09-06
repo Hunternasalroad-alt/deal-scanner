@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { makeTestDb } from "./helpers/testDb";
 import { parseCsv, parseManualCompCsv, syntheticCompId, type ManualCompRow } from "@/lib/importComps";
 import { importComps } from "@/lib/importCompsDb";
@@ -95,6 +96,20 @@ describe("parseManualCompCsv", () => {
     const { rows, errors } = parseManualCompCsv(`${shuffledHeader}\n${shuffledRow}\n`, NOW);
     expect(errors).toEqual([]);
     expect(rows[0]).toMatchObject({ game: "pokemon", setName: "Prismatic Evolutions", cardNumber: "161", name: "Umbreon ex", soldPriceCents: 85000 });
+  });
+
+  it("rejects a sports row missing set_name (I6)", () => {
+    const row = csvRow(["baseball", "", "1", "Ken Griffey Jr", "", "1989", "SGC", "10", "1200.00", "2026-07-01", "", ""]);
+    const { rows, errors } = parseManualCompCsv(`${HEADER}\n${row}\n`, NOW);
+    expect(rows).toHaveLength(0);
+    expect(errors).toEqual([{ line: 2, message: "set_name is required for sports rows" }]);
+  });
+
+  it("rejects a sports row missing year (I6)", () => {
+    const row = csvRow(["baseball", "Upper Deck", "1", "Ken Griffey Jr", "", "", "SGC", "10", "1200.00", "2026-07-01", "", ""]);
+    const { rows, errors } = parseManualCompCsv(`${HEADER}\n${row}\n`, NOW);
+    expect(rows).toHaveLength(0);
+    expect(errors).toEqual([{ line: 2, message: "year is required for sports rows" }]);
   });
 });
 
@@ -200,6 +215,33 @@ describe("importComps (PGlite integration)", () => {
     // or this manual comp would fork a second card instead of attaching here.
     const row: ManualCompRow = {
       game: "basketball", setName: "prizm", cardNumber: "249", name: "ja morant", variant: "",
+      year: 2019, grader: "PSA", grade: "10", soldPriceCents: 95000, soldAt: new Date("2026-07-15T12:00:00Z"),
+      venue: "fanatics", note: "",
+    };
+    expect(await importComps(db, [row])).toEqual({ inserted: 1, duplicates: 0, rejected: [] });
+
+    const [comp] = await db.select().from(comps);
+    expect(comp.cardId).toBe(matched.cardId);
+    expect(await db.select().from(cards)).toHaveLength(1); // no new card created
+  });
+
+  it("a sports CSV row with a variant and a hash-prefixed card_number canonicalizes to the same card (final-review I5)", async () => {
+    const { db } = await makeTestDb();
+    const matched = await matchListing(db, "basketball", {
+      kind: "accepted", title: "2019 Panini Prizm Ja Morant #249 Silver Prizm PSA 10",
+      grader: "PSA", grade: "10", certNumber: null, priceCents: 10000, shippingCents: 0, listingType: "bin",
+      titleFacts: { setHint: null, cardNumberHint: null, yearHint: null, nameTokens: [] },
+    });
+    expect(matched.createdCard).toBe(true);
+    const [createdCard] = await db.select().from(cards).where(eq(cards.id, matched.cardId!));
+    expect(createdCard.variant).toBe("Prizm Silver");
+
+    // Free-text CSV values ("prizm", "ja morant", "silver prizm") and a
+    // "#"-prefixed card_number must all canonicalize through the same forms
+    // (variant word sorting, "#" + case) as the firehose title parser, or
+    // this manual comp would fork a second card instead of attaching here.
+    const row: ManualCompRow = {
+      game: "basketball", setName: "prizm", cardNumber: "#249", name: "ja morant", variant: "silver prizm",
       year: 2019, grader: "PSA", grade: "10", soldPriceCents: 95000, soldAt: new Date("2026-07-15T12:00:00Z"),
       venue: "fanatics", note: "",
     };

@@ -15,6 +15,7 @@ const SET_PHRASES: Record<string, string> = {
   "stadium club": "Topps Stadium Club", "topps chrome": "Topps Chrome", "topps finest": "Topps Finest",
   "topps living": "Topps Living", "topps heritage": "Topps Heritage", "topps archives": "Topps Archives",
   "topps gallery": "Topps Gallery", "topps fire": "Topps Fire", "topps update": "Topps Update",
+  "topps chrome update": "Topps Chrome Update", "topps platinum": "Topps Platinum",
   "update series": "Topps Update", "topps series 1": "Topps", "topps series 2": "Topps", "series 1": "Topps",
   "series 2": "Topps", "topps big league": "Topps Big League", "big league": "Topps Big League",
   "topps museum collection": "Topps Museum Collection", "museum collection": "Topps Museum Collection",
@@ -26,7 +27,7 @@ const SET_PHRASES: Record<string, string> = {
   "topps holiday": "Topps Holiday", "topps": "Topps", "finest": "Topps Finest", "chrome": "Topps Chrome",
   "heritage": "Topps Heritage", "living": "Topps Living",
   "bowman chrome": "Bowman Chrome", "bowman draft": "Bowman Draft", "bowman sterling": "Bowman Sterling",
-  "bowman's best": "Bowman's Best", "bowmans best": "Bowman's Best", "bowman u": "Bowman University",
+  "bowman's best": "Bowman's Best", "bowmans best": "Bowman's Best", "bowman best": "Bowman's Best", "bowman u": "Bowman University",
   "bowman university": "Bowman University", "bowman platinum": "Bowman Platinum", "bowman": "Bowman",
   "panini prizm": "Panini Prizm", "panini select": "Panini Select", "panini mosaic": "Panini Mosaic",
   "panini donruss optic": "Donruss Optic", "donruss optic": "Donruss Optic", "panini donruss": "Donruss",
@@ -44,11 +45,16 @@ const SET_PHRASES: Record<string, string> = {
   "panini elite": "Panini Elite", "panini playoff": "Panini Playoff", "panini instant": "Panini Instant", "instant": "Panini Instant",
   "panini photogenic": "Panini Photogenic", "photogenic": "Panini Photogenic", "panini flux": "Panini Flux", "flux": "Panini Flux",
   "panini prestige": "Panini Prestige", "prestige": "Panini Prestige", "rookies & stars": "Panini Rookies & Stars",
-  "rookies and stars": "Panini Rookies & Stars", "panini hoops": "NBA Hoops", "nba hoops": "NBA Hoops", "hoops": "NBA Hoops",
+  "rookies and stars": "Panini Rookies & Stars", "panini hoops": "NBA Hoops", "panini nba hoops": "NBA Hoops",
+  "nba hoops": "NBA Hoops", "hoops": "NBA Hoops",
   "panini select draft picks": "Panini Select Draft Picks", "select draft picks": "Panini Select Draft Picks",
-  "prizm draft picks": "Panini Prizm Draft Picks", "panini": "Panini", "prizm": "Panini Prizm", "select": "Panini Select",
+  "panini prizm draft picks": "Panini Prizm Draft Picks", "prizm draft picks": "Panini Prizm Draft Picks",
+  "panini contenders draft picks": "Panini Contenders Draft Picks", "contenders draft picks": "Panini Contenders Draft Picks",
+  "panini": "Panini", "prizm": "Panini Prizm", "select": "Panini Select",
   "mosaic": "Panini Mosaic", "optic": "Donruss Optic",
-  "upper deck": "Upper Deck", "ud": "Upper Deck", "ud encore": "Upper Deck Encore", "sp authentic": "SP Authentic",
+  "upper deck": "Upper Deck", "ud": "Upper Deck", "ud encore": "Upper Deck Encore", "ud victory": "UD Victory",
+  "sp authentic": "SP Authentic", "goodwin champions": "Goodwin Champions", "upper deck goodwin champions": "Goodwin Champions",
+  "collector's choice": "Collector's Choice", "collectors choice": "Collector's Choice",
   "black diamond": "Black Diamond", "fleer ultra": "Fleer Ultra", "fleer": "Fleer", "skybox": "SkyBox", "score": "Score",
   "leaf": "Leaf", "pacific": "Pacific", "kellogg's": "Kellogg's", "kelloggs": "Kellogg's", "goudey": "Goudey",
   "o-pee-chee": "O-Pee-Chee", "opc": "O-Pee-Chee",
@@ -74,6 +80,12 @@ const VARIANT_PHRASES: Record<string, string> = {
   "auto": "Auto", "autograph": "Auto", "autographs": "Auto", "autographed": "Auto", "signed": "Auto", "rpa": "RPA",
   "patch": "Patch", "jersey": "Jersey", "relic": "Relic", "relics": "Relic", "memorabilia": "Relic", "mem": "Relic",
   "sp": "SP", "ssp": "SSP", "variation": "Variation", "1st": "1st", "die-cut": "Die-Cut", "die cut": "Die-Cut",
+  // I3a: additional parallel/product color & finish vocabulary.
+  "yellow": "Yellow", "maroon": "Maroon", "ruby": "Ruby", "lava": "Lava", "honeycomb": "Honeycomb", "lime": "Lime",
+  "navy": "Navy", "rose": "Rose", "copper": "Copper", "platinum": "Platinum", "emerald": "Emerald", "magenta": "Magenta",
+  "rainbow": "Rainbow", "zebra": "Zebra", "pandora": "Pandora", "tiger": "Tiger", "prizms": "Prizm", "refractors": "Refractor",
+  "sticker": "Sticker", "mini": "Mini", "checkerboard": "Checkerboard", "photon": "Photon", "shock": "Shock", "prism": "Prism",
+  "cosmic": "Cosmic", "fluorescent": "Fluorescent", "neon": "Neon",
 };
 
 const TEAM_PHRASES = [
@@ -147,6 +159,8 @@ const PROTECTED_PLAYERS = new Set([
   "dallas goedert", "dallas keuchel",
   "allan houston", "orlando cepeda", "boston scott",
   "vida blue", "red grange", "red schoendienst",
+  // I3a fallout: new color/product VARIANT_PHRASES entries collide with these surnames.
+  "pete rose",
 ]);
 
 // --- Helpers ----------------------------------------------------------------
@@ -157,7 +171,46 @@ export const canonicalPlayer = (text: string) => text.trim().split(/\s+/).filter
 
 export function canonicalSet(text: string): string {
   const key = text.trim().toLowerCase().replace(/\s+/g, " ");
-  return SET_PHRASES[key] ?? canonicalPlayer(key);
+  return Object.hasOwn(SET_PHRASES, key) ? SET_PHRASES[key] : canonicalPlayer(key);
+}
+
+// M1: curly quotes/dashes -> their plain ASCII equivalents, applied before
+// any tokenizing so e.g. "O’Neal" (curly apostrophe) survives as one token
+// exactly like the literal "O'Neal" already does, instead of the curly
+// character getting stripped as an unrecognized symbol and splitting the name.
+const normalizeQuotesAndDashes = (s: string) => s.replace(/[‘’]/g, "'").replace(/[–—]/g, "-");
+
+// I5 support: canonicalize a free-text card number the same way the parser's
+// "#"-prefixed extraction does — trim, drop a leading "#", uppercase — so a
+// manual CSV's "#bdc22" lines up with the firehose parser's "BDC22".
+export function canonicalCardNumber(text: string): string {
+  return text.trim().replace(/^#/, "").toUpperCase();
+}
+
+// I5 support: canonicalize a free-text variant description ("silver prizm",
+// "signed /25") through the exact same normalization, serial extraction, and
+// longest-first VARIANT_PHRASES matching the title parser uses, so a manual
+// CSV row's variant column always lines up with parseSportsTitle's output for
+// the same real-world parallel/autograph.
+export function canonicalVariant(text: string): string {
+  let t = normalizeQuotesAndDashes(text);
+
+  let serial: string | null = null;
+  const serialM = /(?:\b(\d{1,4})\s*)?\/\s*(\d{1,4})\b/.exec(t);
+  if (serialM) { serial = `/${serialM[2]}`; t = t.replace(serialM[0], " "); }
+
+  const rawTokens = t.replace(/[^A-Za-z0-9'\-.&\s]/g, " ").split(/\s+/).filter(Boolean);
+  const tokens = rawTokens.map((tok) => tok.toLowerCase().replace(/^[-.]+|[-.]+$/g, "")).filter(Boolean);
+
+  const variantParts: string[] = [];
+  for (let i = 0; i < tokens.length; ) {
+    const varHit = matchPhrase(tokens, i, VARIANT_PHRASES);
+    if (varHit) { if (varHit[1] !== "") variantParts.push(varHit[1]); i += varHit[0]; continue; }
+    i++;
+  }
+
+  const sortedParts = [...new Set(variantParts)].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  return [...sortedParts, ...(serial ? [serial] : [])].join(" ").trim();
 }
 
 export const setLabel = (year: number | null, set: string) =>
@@ -174,15 +227,45 @@ function matchPhrase(tokens: string[], i: number, dict: Record<string, string> |
 }
 
 const TEAMS = new Set(TEAM_PHRASES);
-const GRADE_RX = /\b(psa|bgs|sgc|cgc|beckett|bvg)\s*[-:]?\s*(10|9\.5|9|8\.5|8|7\.5|7|6\.5|6|5\.5|5|4|3|2|1|authentic|auth)?\b/gi;
+
+// I2 (final review): grade digits must never leak through to become a card
+// number. A grading condition descriptor can sit between a grader and its
+// numeric grade ("PSA GEM MT 10") or stand entirely alone as a raw condition
+// call ("EX-MT 6") — longest phrases first so "gem mint" never leaves a
+// dangling "mint". The grade number itself is a general half-grade pattern
+// (1-2 digits, optional ".5"), not an enumerated list, so odd grades like
+// "3.5" strip cleanly instead of leaving a stray ".5" behind.
+const GRADE_DESCRIPTOR = "gem\\s*mint|gem\\s*mt|nm-mt\\+?|ex-mt|vg-ex|mint|gem|nm|ex|vg";
+const GRADE_NUM = "\\d{1,2}(?:\\.5)?";
+// Grader, optional "/DNA" (PSA/DNA autograph certs), optional descriptor,
+// optional numeric grade: "PSA GEM MT 10", "PSA/DNA 9", "BGS 9.5", bare "PSA".
+const GRADE_RX = new RegExp(
+  `\\b(psa|bgs|sgc|cgc|beckett|bvg)(?:\\s*/\\s*dna)?\\s*[-:]?\\s*(?:${GRADE_DESCRIPTOR})?\\s*(${GRADE_NUM}|authentic|auth)?\\b`,
+  "gi",
+);
+// A descriptor+grade with no grader keyword at all ("GEM MINT 10", "MINT 9",
+// "EX-MT 6", "VG 3") is still a grade, not a card number.
+const DESCRIPTOR_GRADE_RX = new RegExp(`\\b(?:${GRADE_DESCRIPTOR})\\s*${GRADE_NUM}\\b`, "gi");
 const GRADE_WORDS_RX = /\b(gem\s*mint|gem\s*mt|nm-mt\+?|pop\s*\d+|low\s*pop)\b/gi;
+// A lone "x/10" or "9.5/10" condition-out-of-10 rating is junk, never a
+// serial print-run and never a card number.
+const GRADE_FRACTION_RX = /\b\d(?:\.5)?\s*\/\s*10\b/g;
+// M3: "Series 1"/"Series 2" is pure Topps-set noise; stripped up front so its
+// digit never reaches the bare-number rule. The set itself still resolves via
+// a "topps" token elsewhere in the title.
+const SERIES_RX = /\bseries\s*[12]\b/gi;
 
 // --- Parser -----------------------------------------------------------------
 export function parseSportsTitle(rawTitle: string): SportsIdentity | null {
-  let title = ` ${rawTitle} `.replace(GRADE_RX, " ").replace(GRADE_WORDS_RX, " ");
+  let title = ` ${normalizeQuotesAndDashes(rawTitle)} `
+    .replace(SERIES_RX, " ")
+    .replace(GRADE_RX, " ")
+    .replace(DESCRIPTOR_GRADE_RX, " ")
+    .replace(GRADE_WORDS_RX, " ")
+    .replace(GRADE_FRACTION_RX, " ");
 
-  // Year: first 19xx/20xx, optionally a season range ("2019-20").
-  const yearM = /\b(19[0-9]\d|20[0-2]\d)(?:-\d{2})?\b/.exec(title);
+  // Year: first 19xx/20xx, optionally a season range ("2019-20" or "2023-2024").
+  const yearM = /\b(19[0-9]\d|20[0-2]\d)(?:-\d{2}(?:\d{2})?)?\b/.exec(title);
   const year = yearM ? Number(yearM[1]) : null;
   if (yearM) title = title.replace(yearM[0], " ");
 
@@ -227,8 +310,14 @@ export function parseSportsTitle(rawTitle: string): SportsIdentity | null {
     if (/\d/.test(t)) {
       // Bare-number rule: a standalone 1-3 digit integer becomes the card number
       // when nothing else claimed it. Anything else containing a digit is junk
-      // (seller SKUs like g6p/0e2x, 4-digit non-years, "3-d").
-      if (cardNumber === null && /^\d{1,3}$/.test(t)) cardNumber = t;
+      // (seller SKUs like g6p/0e2x, 4-digit non-years, "3-d"). A number that's
+      // really a quantity/availability count ("lot of 5", "x 3", "10 avail",
+      // "12 made") is junk too, never a card number.
+      const isQuantity =
+        tokens[i - 1] === "x" ||
+        (tokens[i - 1] === "of" && tokens[i - 2] === "lot") ||
+        /^(avail|available|made|lot)$/.test(tokens[i + 1] ?? "");
+      if (!isQuantity && cardNumber === null && /^\d{1,3}$/.test(t)) cardNumber = t;
       i++; continue;
     }
     if (t === "&" || t.length === 1) { i++; continue; }
