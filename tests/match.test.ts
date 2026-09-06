@@ -7,8 +7,8 @@ import { normalizeListing } from "@/lib/normalize";
 import type { Accepted } from "@/lib/normalize";
 import type { EbayItemSummary } from "@/lib/ebay/client";
 
-const acc = (over: Partial<Accepted["titleFacts"]>): Accepted => ({
-  kind: "accepted", grader: "PSA", grade: "10", certNumber: null,
+const acc = (over: Partial<Accepted["titleFacts"]>, title = ""): Accepted => ({
+  kind: "accepted", title, grader: "PSA", grade: "10", certNumber: null,
   priceCents: 10000, shippingCents: 0, listingType: "bin",
   titleFacts: { setHint: null, cardNumberHint: null, yearHint: null, nameTokens: [], ...over },
 });
@@ -39,61 +39,45 @@ describe("matchListing", () => {
     expect(r.createdCard).toBe(false);
   });
 
-  it("sports: creates on first sight (MEDIUM), re-finds on second (HIGH)", async () => {
+  it("sports: creates a canonical card on first sight (MEDIUM), re-finds it from a differently-worded title (HIGH)", async () => {
     const { db } = await makeTestDb();
-    const facts = { yearHint: 2020, cardNumberHint: "325", nameTokens: ["Prizm", "Justin", "Herbert"] };
-    const first = await matchListing(db, "football", acc(facts));
-    expect(first).toMatchObject({ confidence: "medium", createdCard: true });
-    const second = await matchListing(db, "football", acc(facts));
-    expect(second).toMatchObject({ confidence: "high", createdCard: false });
-    expect(second.cardId).toBe(first.cardId);
+    const a = await matchListing(db, "basketball", acc({}, "2019-20 Panini Select Concourse Silver Prizm Shai Gilgeous-Alexander #81 PSA 9"));
+    expect(a.confidence).toBe("medium"); expect(a.createdCard).toBe(true);
+    const b = await matchListing(db, "basketball", acc({}, "Shai Gilgeous-Alexander 2019 Select #81 Silver Prizm Concourse Thunder PSA 10 RC"));
+    expect(b.confidence).toBe("high"); expect(b.cardId).toBe(a.cardId); expect(b.createdCard).toBe(false);
+    const [card] = await db.select().from(cards).where(eq(cards.id, a.cardId!));
+    expect(card).toMatchObject({ game: "basketball", setName: "2019 Panini Select", cardNumber: "81", name: "Shai Gilgeous-Alexander", variant: "Concourse Prizm Silver", year: 2019 });
   });
 
-  it("sports: LOW without year+number", async () => {
+  it("sports: base and parallel are different cards", async () => {
     const { db } = await makeTestDb();
-    const r = await matchListing(db, "baseball", acc({ nameTokens: ["Griffey"] }));
-    expect(r).toMatchObject({ confidence: "low", cardId: null, createdCard: false });
+    const base = await matchListing(db, "basketball", acc({}, "2019 Panini Prizm Ja Morant #249 PSA 10"));
+    const silver = await matchListing(db, "basketball", acc({}, "2019 Panini Prizm Ja Morant #249 Silver Prizm PSA 10"));
+    expect(base.cardId).not.toBe(silver.cardId);
+    expect((await db.select().from(cards)).length).toBe(2);
   });
 
-  it("sports: two-letter player-name tokens survive (CJ Stroud, Bo Nix)", async () => {
+  it("sports: two-letter player-name tokens survive (CJ Stroud)", async () => {
     const { db } = await makeTestDb();
-    const n = acc({ nameTokens: ["CJ", "Stroud", "PSA"], cardNumberHint: "150", yearHint: 2023 });
-    const r = await matchListing(db, "football", n);
+    const r = await matchListing(db, "football", acc({}, "2023 Panini Prizm CJ Stroud #150 PSA 10 Texans RC"));
     expect(r.createdCard).toBe(true);
-    const [card] = await db.select().from(cards).where(eq(cards.game, "football"));
-    expect(card.name).toBe("Cj Stroud"); // titleCase of both tokens — 2-letter token kept
-    // I1 (final review): setName carries the year so a second year of the same
-    // player+number gets its own identity-index row instead of colliding.
-    expect(card.setName).toBe("2023");
+    const [card] = await db.select().from(cards);
+    expect(card.name).toBe("Cj Stroud");
   });
 
-  it("sports: a fraction-derived cardNumberHint (serial print-run, not a card number) never matches or creates", async () => {
+  it("sports: LOW and no card when the title has no card number or no player", async () => {
     const { db } = await makeTestDb();
-    // Absent the I2 fraction gate this would otherwise create a card — proves
-    // the gate, not just the pre-existing yearHint/nameTokens requirement, is
-    // what's blocking it.
-    const n = acc({ cardNumberHint: "23", cardNumberFromFraction: true, yearHint: 2023, nameTokens: ["Justin", "Stroud"] });
-    const r = await matchListing(db, "football", n);
-    expect(r).toEqual({ cardId: null, confidence: "low", createdCard: false });
+    expect(await matchListing(db, "basketball", acc({}, "2020 Panini Mosaic Lamelo Ball Rookie Auto Mosaic PSA 10")))
+      .toEqual({ cardId: null, confidence: "low", createdCard: false });
+    expect(await matchListing(db, "baseball", acc({}, "2024 Panini Prizm #22 PSA 10 RC Rookie Card")))
+      .toEqual({ cardId: null, confidence: "low", createdCard: false });
     expect(await db.select().from(cards)).toEqual([]);
   });
 
-  it("sports: strips #-prefixed and serial-fraction tokens, and the cardNumberHint itself, from name material", async () => {
+  it("sports: a serial print-run is never a card number", async () => {
     const { db } = await makeTestDb();
-    const n = acc({ cardNumberHint: "339", cardNumberFromFraction: false, yearHint: 2023, nameTokens: ["#339", "23/99", "Stroud"] });
-    const r = await matchListing(db, "football", n);
-    expect(r.createdCard).toBe(true);
-    const [card] = await db.select().from(cards).where(eq(cards.game, "football"));
-    expect(card.name).toBe("Stroud"); // both junk tokens ("#339", "23/99") excluded
-  });
-
-  it("sports: never creates a card with an empty name", async () => {
-    const { db } = await makeTestDb();
-    // every token is stoplisted or numeric → no usable name material
-    const n = acc({ nameTokens: ["PSA", "2023", "Graded", "Mint"], cardNumberHint: "77", yearHint: 2023 });
-    const r = await matchListing(db, "baseball", n);
-    expect(r).toEqual({ cardId: null, confidence: "low", createdCard: false });
-    expect(await db.select().from(cards)).toEqual([]);
+    expect(await matchListing(db, "basketball", acc({}, "2022 Panini Prizm Keegan Murray Rookie Purple Prizm /99 PSA 10")))
+      .toEqual({ cardId: null, confidence: "low", createdCard: false });
   });
 
   it("matches the real Sawsbuck soak title despite junk tokens", async () => {

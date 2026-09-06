@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { cards, comps } from "@/db/schema";
 import type { Db } from "@/db/client";
 import { syntheticCompId, type ManualCompRow } from "@/lib/importComps";
+import { canonicalPlayer, canonicalSet, setLabel } from "@/lib/sportsIdentity";
 
 function formatCandidate(c: { setName: string; name: string; variant: string }): string {
   return `${c.setName || "(no set)"} / ${c.name} / ${c.variant || "(no variant)"}`;
@@ -52,13 +53,23 @@ async function resolvePokemonCard(db: Db, row: ManualCompRow): Promise<{ cardId:
   return { error: await pokemonMatchError(db, row) };
 }
 
+// spec §17.5: a manual CSV row is free text ("prizm", "ja morant") and must
+// resolve through the same canonical forms the firehose title parser produces
+// (src/lib/sportsIdentity.ts) — otherwise a manually-entered comp would fork
+// a second card instead of attaching to the one matchListing already created.
+function canonicalSportsIdentity(row: ManualCompRow): { setName: string; name: string; variant: string } {
+  const setName = row.setName ? setLabel(row.year, canonicalSet(row.setName)) : setLabel(row.year, "");
+  return { setName, name: canonicalPlayer(row.name), variant: canonicalPlayer(row.variant) };
+}
+
 async function findSportsCard(db: Db, row: ManualCompRow) {
-  const setKey = row.setName.toLowerCase();
-  const nameKey = row.name.toLowerCase();
+  const { setName, name, variant } = canonicalSportsIdentity(row);
+  const setKey = setName.toLowerCase();
+  const nameKey = name.toLowerCase();
   const candidates = await db
     .select()
     .from(cards)
-    .where(and(eq(cards.game, row.game), eq(cards.cardNumber, row.cardNumber), eq(cards.variant, row.variant)));
+    .where(and(eq(cards.game, row.game), eq(cards.cardNumber, row.cardNumber), eq(cards.variant, variant)));
   return candidates.find((c) => c.setName.toLowerCase() === setKey && c.name.toLowerCase() === nameKey) ?? null;
 }
 
@@ -70,11 +81,12 @@ async function resolveSportsCard(db: Db, row: ManualCompRow): Promise<{ cardId: 
   const existing = await findSportsCard(db, row);
   if (existing) return { cardId: existing.id };
 
+  const { setName, name, variant } = canonicalSportsIdentity(row);
   const inserted = await db
     .insert(cards)
     .values({
-      game: row.game, name: row.name, setName: row.setName, cardNumber: row.cardNumber,
-      variant: row.variant, year: row.year, createdFrom: "manual",
+      game: row.game, name, setName, cardNumber: row.cardNumber,
+      variant, year: row.year, createdFrom: "manual",
     })
     .onConflictDoNothing()
     .returning();

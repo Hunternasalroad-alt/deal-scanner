@@ -258,10 +258,12 @@ describe("runScanTick", () => {
     expect(row.grader).toBe("PSA");
     expect(row.cardId).not.toBeNull();
 
-    // I1/I2-correct identity: setName carries the year, and the serial-print
-    // token ("#339") that isn't the card's identity never leaks into the name.
+    // spec §17.1-2 (supersedes the pre-parser I1 "year-only" setName): identity
+    // now comes from the deterministic title parser, so setName carries the
+    // recognized set alongside the year, and the "#339" card-number token never
+    // leaks into the name.
     const [card] = await db.select().from(cards).where(eq(cards.id, row.cardId!));
-    expect(card.setName).toBe("2023");
+    expect(card.setName).toBe("2023 Panini Prizm");
     expect(card.name).toContain("Cj Stroud");
     expect(card.name).not.toContain("#339");
   });

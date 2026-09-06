@@ -2,6 +2,7 @@ import type { EbayItemDetail, EbayItemSummary } from "@/lib/ebay/client";
 
 export type Accepted = {
   kind: "accepted";
+  title: string;
   grader: "PSA" | "BGS" | "SGC";
   grade: string | null;
   certNumber: string | null;
@@ -84,6 +85,7 @@ export function normalizeListing(item: EbayItemSummary, detail?: EbayItemDetail)
 
   return {
     kind: "accepted",
+    title,
     grader, grade: grade ? grade.replace(/[^\d.]/g, "") || null : null,
     certNumber: aspects.get("certification number") ?? null,
     priceCents, shippingCents,

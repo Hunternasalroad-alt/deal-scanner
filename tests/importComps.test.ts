@@ -3,6 +3,7 @@ import { makeTestDb } from "./helpers/testDb";
 import { parseCsv, parseManualCompCsv, syntheticCompId, type ManualCompRow } from "@/lib/importComps";
 import { importComps } from "@/lib/importCompsDb";
 import { recomputeReferences } from "@/lib/reference";
+import { matchListing } from "@/lib/match";
 import { cards, comps, referencePrices } from "@/db/schema";
 
 // Builds a CSV row from field values, quoting only where RFC-4180 requires
@@ -183,6 +184,30 @@ describe("importComps (PGlite integration)", () => {
     expect(await importComps(db, [row2])).toEqual({ inserted: 1, duplicates: 0, rejected: [] });
     expect(await db.select().from(cards)).toHaveLength(1); // no duplicate card
     expect(await db.select().from(comps)).toHaveLength(2);
+  });
+
+  it("a sports CSV row canonicalizes to the same card matchListing already created from a firehose title (spec §17.5)", async () => {
+    const { db } = await makeTestDb();
+    const matched = await matchListing(db, "basketball", {
+      kind: "accepted", title: "2019 Panini Prizm Ja Morant #249 PSA 10",
+      grader: "PSA", grade: "10", certNumber: null, priceCents: 10000, shippingCents: 0, listingType: "bin",
+      titleFacts: { setHint: null, cardNumberHint: null, yearHint: null, nameTokens: [] },
+    });
+    expect(matched.createdCard).toBe(true);
+
+    // Free-text CSV values ("prizm", "ja morant") must resolve through the same
+    // canonical forms (src/lib/sportsIdentity.ts) as the firehose title parser,
+    // or this manual comp would fork a second card instead of attaching here.
+    const row: ManualCompRow = {
+      game: "basketball", setName: "prizm", cardNumber: "249", name: "ja morant", variant: "",
+      year: 2019, grader: "PSA", grade: "10", soldPriceCents: 95000, soldAt: new Date("2026-07-15T12:00:00Z"),
+      venue: "fanatics", note: "",
+    };
+    expect(await importComps(db, [row])).toEqual({ inserted: 1, duplicates: 0, rejected: [] });
+
+    const [comp] = await db.select().from(comps);
+    expect(comp.cardId).toBe(matched.cardId);
+    expect(await db.select().from(cards)).toHaveLength(1); // no new card created
   });
 });
 
