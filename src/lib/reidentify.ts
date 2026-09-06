@@ -1,4 +1,4 @@
-import { and, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { cards, comps, listings, referencePrices } from "@/db/schema";
 import type { Db } from "@/db/client";
 import { parseSportsTitle, setLabel } from "@/lib/sportsIdentity";
@@ -62,8 +62,15 @@ export async function reidentifySports(
   // below — carries an id above the ceiling and is excluded from the orphan
   // sweep at the bottom by construction, never by timing luck. Tests pin
   // this directly via opts.orphanIdCeiling.
+  //
+  // Round-2 fix: spreading every cards.id into Math.max(0, ...ids) blows the
+  // JS call stack (RangeError: Maximum call stack size exceeded) once the
+  // table passes roughly 100k rows. A single server-side aggregate has no
+  // such limit and always returns exactly one row (coalesce covers the
+  // empty-table case), so it scales to any table size.
   const orphanIdCeiling =
-    opts?.orphanIdCeiling ?? Math.max(0, ...(await db.select({ id: cards.id }).from(cards)).map((c) => c.id));
+    opts?.orphanIdCeiling ??
+    (await db.select({ m: sql<number>`coalesce(max(${cards.id}), 0)::int` }).from(cards))[0].m;
 
   // Scope (spec §17.6): every accepted (non-dropped) sports listing. comps
   // carry no title of their own — they reach one only by joining back to a

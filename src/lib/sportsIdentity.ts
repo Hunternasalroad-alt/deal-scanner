@@ -184,7 +184,7 @@ const normalizeQuotesAndDashes = (s: string) => s.replace(/[‘’]/g, "'").repl
 // "#"-prefixed extraction does — trim, drop a leading "#", uppercase — so a
 // manual CSV's "#bdc22" lines up with the firehose parser's "BDC22".
 export function canonicalCardNumber(text: string): string {
-  return text.trim().replace(/^#/, "").toUpperCase();
+  return text.trim().replace(/^#\s*/, "").toUpperCase();
 }
 
 // I5 support: canonicalize a free-text variant description ("silver prizm",
@@ -243,13 +243,35 @@ const GRADE_RX = new RegExp(
   `\\b(psa|bgs|sgc|cgc|beckett|bvg)(?:\\s*/\\s*dna)?\\s*[-:]?\\s*(?:${GRADE_DESCRIPTOR})?\\s*(${GRADE_NUM}|authentic|auth)?\\b`,
   "gi",
 );
-// A descriptor+grade with no grader keyword at all ("GEM MINT 10", "MINT 9",
-// "EX-MT 6", "VG 3") is still a grade, not a card number.
-const DESCRIPTOR_GRADE_RX = new RegExp(`\\b(?:${GRADE_DESCRIPTOR})\\s*${GRADE_NUM}\\b`, "gi");
+// A descriptor+grade with no grader keyword at all is still a grade, not a
+// card number -- but the two forms differ in how safe that assumption is.
+// The multiword/hyphenated forms ("GEM MINT 10", "EX-MT 6", "VG-EX 4",
+// "NM-MT+ 8") never collide with an ordinary seller title, so they're always
+// stripped. The single-word forms ("MINT 9", "NM 8", "EX 6", "VG 3", bare
+// "MT 7") collide with a genuine raw-card "<condition-claim> <card-number>"
+// title ("1996 Topps Mint 45 Ken Griffey Jr" is card #45, not a grade of
+// 45), so they're only trustworthy as a grade when the title also carries a
+// grader token (PSA/BGS/SGC/CGC/Beckett) somewhere -- true of every real
+// graded-listing title, since a seller who writes "Mint" without ever
+// naming a grader is describing a raw card's condition, not a slab grade.
+const DESCRIPTOR_GRADE_MULTIWORD_RX = new RegExp(`\\b(?:gem\\s*mint|gem\\s*mt|nm-mt\\+?|ex-mt|vg-ex)\\s*${GRADE_NUM}\\b`, "gi");
+const DESCRIPTOR_GRADE_SINGLE_RX = new RegExp(`\\b(?:mint|nm|ex|vg|mt)\\s*${GRADE_NUM}\\b`, "gi");
+const GRADER_TOKEN_RX = /\b(?:psa|bgs|sgc|cgc|beckett)\b/i;
 const GRADE_WORDS_RX = /\b(gem\s*mint|gem\s*mt|nm-mt\+?|pop\s*\d+|low\s*pop)\b/gi;
 // A lone "x/10" or "9.5/10" condition-out-of-10 rating is junk, never a
-// serial print-run and never a card number.
-const GRADE_FRACTION_RX = /\b\d(?:\.5)?\s*\/\s*10\b/g;
+// serial print-run and never a card number -- but only when a grading word
+// actually precedes it (spaces / an optional "-" or ":" allowed between). An
+// earlier, ungated version of this regex matched ANY "\d(.5)?/10", including
+// a genuine single-digit-numerator serial print run ("Kaboom 3/10" is card 3
+// of a 10-card print, not a 9-or-10 condition score) and deleted it outright,
+// over-merging distinct /10 parallels into one card. Requiring a grading
+// word immediately before the fraction disambiguates: "PSA 9/10",
+// "Condition: 9/10", "Grade 9.5/10" are grading talk and get stripped whole
+// (the grading word is consumed along with the fraction, so it can't leak
+// into the player name); "Kaboom 3/10" has no such word before it and is
+// left alone for the real serial extractor below to read as "/10".
+const GRADE_FRACTION_RX =
+  /\b(?:psa|bgs|sgc|cgc|grade|graded|condition|gem|mint|mt|nm|rated)\s*[-:]?\s*\d(?:\.5)?\s*\/\s*10\b/gi;
 // M3: "Series 1"/"Series 2" is pure Topps-set noise; stripped up front so its
 // digit never reaches the bare-number rule. The set itself still resolves via
 // a "topps" token elsewhere in the title.
@@ -257,12 +279,20 @@ const SERIES_RX = /\bseries\s*[12]\b/gi;
 
 // --- Parser -----------------------------------------------------------------
 export function parseSportsTitle(rawTitle: string): SportsIdentity | null {
-  let title = ` ${normalizeQuotesAndDashes(rawTitle)} `
+  const normalized = normalizeQuotesAndDashes(rawTitle);
+  // Round 2 #2: whether the single-word descriptor+grade strip below is safe
+  // to apply -- checked against the pre-strip text, since by the time
+  // DESCRIPTOR_GRADE_SINGLE_RX would run, GRADE_RX has already consumed any
+  // grader-adjacent occurrence ("PSA 10"); this only asks whether the title
+  // named a grader ANYWHERE.
+  const hasGraderToken = GRADER_TOKEN_RX.test(normalized);
+  let title = ` ${normalized} `
     .replace(SERIES_RX, " ")
     .replace(GRADE_RX, " ")
-    .replace(DESCRIPTOR_GRADE_RX, " ")
+    .replace(DESCRIPTOR_GRADE_MULTIWORD_RX, " ")
     .replace(GRADE_WORDS_RX, " ")
     .replace(GRADE_FRACTION_RX, " ");
+  if (hasGraderToken) title = title.replace(DESCRIPTOR_GRADE_SINGLE_RX, " ");
 
   // Year: first 19xx/20xx, optionally a season range ("2019-20" or "2023-2024").
   const yearM = /\b(19[0-9]\d|20[0-2]\d)(?:-\d{2}(?:\d{2})?)?\b/.exec(title);

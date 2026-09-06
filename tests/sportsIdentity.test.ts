@@ -120,6 +120,21 @@ describe("parseSportsTitle corpus", () => {
   it("a grader-descriptor-grade with a hyphenated descriptor rejects the same way (I2)", () => {
     expect(parseSportsTitle("1975 Topps Robin Yount PSA NM-MT 8")).toBeNull();
   });
+  it("a single-digit-numerator /10 serial survives outside grading context (Round 2 #1)", () => {
+    expect(parseSportsTitle("2023 Panini Prizm Anthony Edwards #23 Kaboom 3/10 PSA 10")).toEqual({
+      year: 2023, set: "Panini Prizm", cardNumber: "23", player: "Anthony Edwards", variant: "Kaboom /10",
+    });
+  });
+  it("a grading fraction in grading context is stripped with no leaked serial (Round 2 #1)", () => {
+    expect(parseSportsTitle("2023 Panini Prizm Anthony Edwards #23 Condition 9/10 Lakers")).toEqual({
+      year: 2023, set: "Panini Prizm", cardNumber: "23", player: "Anthony Edwards", variant: "",
+    });
+  });
+  it("a single-word descriptor+number with no grader token is a real card number, not a grade (Round 2 #2)", () => {
+    expect(parseSportsTitle("1996 Topps Mint 45 Ken Griffey Jr")).toEqual({
+      year: 1996, set: "Topps", cardNumber: "45", player: "Ken Griffey Jr", variant: "",
+    });
+  });
 });
 
 describe("helpers", () => {
@@ -153,5 +168,8 @@ describe("helpers", () => {
   });
   it("canonicalCardNumber strips a leading # and uppercases", () => {
     expect(canonicalCardNumber("#bdc22")).toBe("BDC22");
+  });
+  it("canonicalCardNumber strips a leading # plus following whitespace (Round 2 #3)", () => {
+    expect(canonicalCardNumber("# 249")).toBe("249");
   });
 });
