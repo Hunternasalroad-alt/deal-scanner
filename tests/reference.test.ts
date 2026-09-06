@@ -77,6 +77,25 @@ it("collectPeerAsks returns only active high/medium BIN asks within the 14-day r
   expect(asks.find((a) => a.ebayItemId === "bin-hi")!.totalCents).toBe(100500); // price + shipping
 });
 
+it("collectPeerAsks collapses clone listings sharing (title, price) into one representative ask", async () => {
+  const { db } = await makeTestDb();
+  const [card] = await db.insert(cards).values({ game: "pokemon", name: "Umbreon ex", setName: "S", cardNumber: "161", createdFrom: "catalog" }).returning();
+  const base = { cardId: card.id, categoryId: "183454", grader: "PSA" as const, grade: "10", listingType: "bin" as const, matchConfidence: "high" as const, status: "active" as const };
+  await db.insert(listings).values([
+    { ...base, ebayItemId: "c1", title: "CLONE", priceCents: 9500, shippingCents: 0 },
+    { ...base, ebayItemId: "c2", title: "CLONE", priceCents: 9500, shippingCents: 0 },
+    { ...base, ebayItemId: "c3", title: "CLONE", priceCents: 9500, shippingCents: 0 },
+    { ...base, ebayItemId: "other", title: "OTHER", priceCents: 12000, shippingCents: 0 },
+  ]);
+  const map = await collectPeerAsks(db, [card.id]);
+  const asks = map.get(peerKey(card.id, "PSA", "10"))!;
+  expect(asks).toHaveLength(2); // one CLONE representative + OTHER, not 4
+  // Excluding c1 (the CLONE representative) leaves only OTHER — 1 peer, below MIN_PEERS 2.
+  expect(peerFloorCents(asks, "c1")).toBeNull();
+  // A self id that isn't in the set excludes nothing: CLONE (9500) undercuts OTHER (12000).
+  expect(peerFloorCents(asks, "zzz")).toBe(9500);
+});
+
 it("rescoreActiveListings clears stale scores, applies peer floors, prefers comps, and skips unchanged rows", async () => {
   const { db } = await makeTestDb();
   const [card] = await db.insert(cards).values({ game: "pokemon", name: "Pikachu V", setName: "S4", cardNumber: "104", createdFrom: "catalog" }).returning();

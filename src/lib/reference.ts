@@ -76,7 +76,7 @@ export async function collectPeerAsks(db: Db, cardIds: number[]): Promise<Map<st
   const rows = await db
     .select({
       id: listings.ebayItemId, cardId: listings.cardId, grader: listings.grader,
-      grade: listings.grade, priceCents: listings.priceCents, shippingCents: listings.shippingCents,
+      grade: listings.grade, title: listings.title, priceCents: listings.priceCents, shippingCents: listings.shippingCents,
     })
     .from(listings)
     .where(and(
@@ -86,12 +86,29 @@ export async function collectPeerAsks(db: Db, cardIds: number[]): Promise<Map<st
       inArray(listings.cardId, cardIds),
       isNotNull(listings.grader),
       gte(listings.firstSeen, new Date(Date.now() - PEER_MAX_AGE_MS)),
-    ));
+    ))
+    .orderBy(listings.ebayItemId); // deterministic "first encountered" for the dedup below
   const map = new Map<string, PeerAsk[]>();
+  // Clone collapse: a seller relisting the same item as dozens of separate eBay
+  // listings is one market offer, not N — left uncollapsed, each clone counts
+  // as every other clone's peer and scores ~0% against its own duplicates.
+  // Distinct sellers who happen to share an identical title AND price collapse
+  // too — we can't tell that apart from one seller's clones, and treating them
+  // as one offer is conservative (fewer peer scores produced, never wrong
+  // ones). Dedup within each (cardId, grader, grade) peer group by
+  // (title, totalCents), keeping the first-encountered listing as the
+  // representative ask.
+  const seenByKey = new Map<string, Set<string>>();
   for (const r of rows) {
     if (r.cardId === null || r.grader === null) continue; // narrows for TS; the query already filters
     const key = peerKey(r.cardId, r.grader, r.grade);
-    const ask = { ebayItemId: r.id, totalCents: r.priceCents + r.shippingCents };
+    const totalCents = r.priceCents + r.shippingCents;
+    const dedupeKey = `${r.title}|${totalCents}`;
+    let seen = seenByKey.get(key);
+    if (!seen) { seen = new Set(); seenByKey.set(key, seen); }
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    const ask = { ebayItemId: r.id, totalCents };
     const asks = map.get(key);
     if (asks) asks.push(ask); else map.set(key, [ask]);
   }

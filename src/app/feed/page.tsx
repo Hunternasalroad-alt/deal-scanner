@@ -29,15 +29,37 @@ export default async function FeedPage({ searchParams }: { searchParams: Promise
   const db = getDb();
   const feedWhere = [isNull(listings.dropReason), eq(listings.status, "active")];
   if (game) feedWhere.push(eq(listings.game, game));
-  const rows = await db
-    .select({ id: listings.ebayItemId, title: listings.title, grader: listings.grader, grade: listings.grade, price: listings.priceCents, conf: listings.matchConfidence, cardId: listings.cardId, card: cards.name, scoreBps: listings.scoreBps, scoreBasis: listings.scoreBasis, refValueCents: referencePrices.valueCents })
+  // Clone collapse (spec: sellers relist the same graded card as many separate
+  // eBay items — one dealer's 37 identical listings would otherwise flood the
+  // top-100 as 37 rows). Listings sharing (title, price_cents) are one row,
+  // via DISTINCT ON — the best-ranked member is the representative whose
+  // link/score/value render. COUNT(*) OVER the same partition is evaluated
+  // BEFORE DISTINCT ON collapses rows (Postgres runs window functions ahead of
+  // DISTINCT), so it still sees every clone; it becomes the `clones` count on
+  // the surviving row. Ranking + LIMIT are re-applied in the outer query,
+  // AFTER collapsing, so the top 100 are 100 distinct offers.
+  const collapsedFeed = db
+    .selectDistinctOn([listings.title, listings.priceCents], {
+      id: listings.ebayItemId, title: listings.title, grader: listings.grader, grade: listings.grade,
+      price: listings.priceCents, conf: listings.matchConfidence, cardId: listings.cardId, card: cards.name,
+      scoreBps: listings.scoreBps, scoreBasis: listings.scoreBasis, refValueCents: referencePrices.valueCents,
+      firstSeen: listings.firstSeen,
+      clones: sql<number>`count(*) over (partition by ${listings.title}, ${listings.priceCents})::int`.as("clones"),
+    })
     .from(listings).leftJoin(cards, eq(listings.cardId, cards.id))
     .leftJoin(referencePrices, and(
       eq(referencePrices.cardId, listings.cardId),
       eq(referencePrices.grader, listings.grader),
       eq(referencePrices.grade, sql`coalesce(${listings.grade}, '')`),
     ))
-    .where(and(...feedWhere)).orderBy(sql`${listings.scoreBps} desc nulls last`, desc(listings.firstSeen)).limit(100);
+    .where(and(...feedWhere))
+    .orderBy(listings.title, listings.priceCents, sql`${listings.scoreBps} desc nulls last`, desc(listings.firstSeen))
+    .as("collapsed_feed");
+  const rows = await db
+    .select()
+    .from(collapsedFeed)
+    .orderBy(sql`${collapsedFeed.scoreBps} desc nulls last`, desc(collapsedFeed.firstSeen))
+    .limit(100);
 
   // Filter-bar counts (per-game feed filter): grouped over the same base
   // predicate as the feed query above but without the `game` filter itself,
@@ -98,7 +120,7 @@ export default async function FeedPage({ searchParams }: { searchParams: Promise
             const m = metricsByKey.get(`${r.cardId}|${r.grader}|${r.grade ?? ""}`);
             return (
               <tr key={r.id}>
-                <td>{r.card ?? "—"}</td><td><a href={itemUrl(r.id)} target="_blank" rel="noopener noreferrer">{r.title}</a></td><td>{r.grader} {r.grade}</td>
+                <td>{r.card ?? "—"}</td><td><a href={itemUrl(r.id)} target="_blank" rel="noopener noreferrer">{r.title}</a>{r.clones > 1 ? ` ×${r.clones}` : ""}</td><td>{r.grader} {r.grade}</td>
                 <td align="right">${(r.price / 100).toFixed(2)}</td>
                 <td align="right">{(() => { const v = displayValue(r); return v ? `$${(v.cents / 100).toFixed(2)} (${v.basis})` : "—"; })()}</td>
                 <td align="right" title={m ? m.lastSaleAt.toISOString() : undefined}>{m ? `$${(m.lastSaleCents / 100).toFixed(2)}` : "—"}</td>
